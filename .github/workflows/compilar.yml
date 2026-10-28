@@ -23,12 +23,12 @@ jobs:
         with:
           gradle-version: 8.5
 
-      - name: Criar projeto Android base
+      - name: Criar projeto Android dentro da pasta proj
         shell: bash
         run: |
-          mkdir -p app/src/main/java/com/tomo/agentev8 app/src/main/res/values
+          mkdir -p proj/app/src/main/java/com/tomo/agentev8 proj/app/src/main/res/values
 
-          cat > settings.gradle <<'EOF'
+          cat > proj/settings.gradle <<'EOF'
           pluginManagement {
               repositories { google(); mavenCentral(); gradlePluginPortal() }
           }
@@ -39,19 +39,19 @@ jobs:
           include ":app"
           EOF
 
-          cat > build.gradle <<'EOF'
+          cat > proj/build.gradle <<'EOF'
           plugins {
               id 'com.android.application' version '8.2.0' apply false
               id 'org.jetbrains.kotlin.android' version '1.9.20' apply false
           }
           EOF
 
-          cat > gradle.properties <<'EOF'
+          cat > proj/gradle.properties <<'EOF'
           org.gradle.jvmargs=-Xmx2g
           android.useAndroidX=true
           EOF
 
-          cat > app/build.gradle <<'EOF'
+          cat > proj/app/build.gradle <<'EOF'
           plugins {
               id 'com.android.application'
               id 'org.jetbrains.kotlin.android'
@@ -78,7 +78,7 @@ jobs:
           }
           EOF
 
-          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          cat > proj/app/src/main/AndroidManifest.xml <<'EOF'
           <?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
               <uses-permission android:name="android.permission.INTERNET"/>
@@ -93,12 +93,12 @@ jobs:
           </manifest>
           EOF
 
-          cat > app/src/main/res/values/strings.xml <<'EOF'
+          cat > proj/app/src/main/res/values/strings.xml <<'EOF'
           <?xml version="1.0" encoding="utf-8"?>
           <resources><string name="app_name">Agente V8</string></resources>
           EOF
 
-          cat > app/src/main/java/com/tomo/agentev8/MainActivity.kt <<'EOF'
+          cat > proj/app/src/main/java/com/tomo/agentev8/MainActivity.kt <<'EOF'
           package com.tomo.agentev8
 
           import android.app.Activity
@@ -123,6 +123,7 @@ jobs:
       - name: Gerar Gradle Wrapper e Compilar APK
         shell: bash
         run: |
+          cd proj
           gradle wrapper --gradle-version 8.5
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon
@@ -131,4 +132,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: agente-v8-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: proj/app/build/outputs/apk/debug/app-debug.apk
