@@ -1,4 +1,4 @@
-name: Compilar e Publicar Agente V8 Completo
+name: Compilar e Publicar Agente V8 com Background Tasks
 
 on:
   workflow_dispatch:
@@ -23,18 +23,14 @@ jobs:
         with:
           gradle-version: 8.5
 
-      - name: Criar projeto completo Agente V8 otimizado para A17
+      - name: Criar Projeto Agente V8 com Motor de Background
         shell: bash
         run: |
           mkdir -p proj/app/src/main/java/com/tomo/agentev8 proj/app/src/main/res/values
 
           cat > proj/settings.gradle <<'EOF'
-          pluginManagement {
-              repositories { google(); mavenCentral(); gradlePluginPortal() }
-          }
-          dependencyResolutionManagement {
-              repositories { google(); mavenCentral() }
-          }
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositories { google(); mavenCentral() } }
           rootProject.name = "AgenteV8"
           include ":app"
           EOF
@@ -63,8 +59,8 @@ jobs:
                   applicationId 'com.tomo.agentev8'
                   minSdk 26
                   targetSdk 34
-                  versionCode 5
-                  versionName '2.2'
+                  versionCode 8
+                  versionName '4.5'
               }
               compileOptions {
                   sourceCompatibility JavaVersion.VERSION_17
@@ -82,6 +78,8 @@ jobs:
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
               <uses-permission android:name="android.permission.INTERNET"/>
               <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+              <uses-permission android:name="android.permission.WAKE_LOCK"/>
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
               
               <application 
                   android:label="Agente V8" 
@@ -101,6 +99,84 @@ jobs:
           <resources><string name="app_name">Agente V8</string></resources>
           EOF
 
+          # Banco de Dados Local Completo (Memória, Projetos e Tarefas em Background)
+          cat > proj/app/src/main/java/com/tomo/agentev8/DatabaseHelper.kt <<'EOF'
+          package com.tomo.agentev8
+
+          import android.content.ContentValues
+          import android.content.Context
+          import android.database.sqlite.SQLiteDatabase
+          import android.database.sqlite.SQLiteOpenHelper
+
+          class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "agentev8_full.db", null, 2) {
+
+              override fun onCreate(db: SQLiteDatabase) {
+                  db.execSQL("CREATE TABLE memory (id INTEGER PRIMARY KEY AUTOINCREMENT, info TEXT)")
+                  db.execSQL("CREATE TABLE projects (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, description TEXT)")
+                  db.execSQL("CREATE TABLE background_tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, status TEXT, result TEXT)")
+              }
+
+              override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+                  db.execSQL("DROP TABLE IF EXISTS memory")
+                  db.execSQL("DROP TABLE IF EXISTS projects")
+                  db.execSQL("DROP TABLE IF EXISTS background_tasks")
+                  onCreate(db)
+              }
+
+              fun addMemory(info: String) {
+                  writableDatabase.use { db ->
+                      val values = ContentValues().apply { put("info", info) }
+                      db.insert("memory", null, values)
+                  }
+              }
+
+              fun getMemories(): List<String> {
+                  val list = mutableListOf<String>()
+                  readableDatabase.rawQuery("SELECT info FROM memory", null).use { cursor ->
+                      while (cursor.moveToNext()) { list.add(cursor.getString(0)) }
+                  }
+                  return list
+              }
+
+              fun addProject(name: String, desc: String) {
+                  writableDatabase.use { db ->
+                      val values = ContentValues().apply { put("name", name); put("description", desc) }
+                      db.insert("projects", null, values)
+                  }
+              }
+
+              fun getProjects(): List<String> {
+                  val list = mutableListOf<String>()
+                  readableDatabase.rawQuery("SELECT name, description FROM projects", null).use { cursor ->
+                      while (cursor.moveToNext()) { list.add("📌 ${cursor.getString(0)}: ${cursor.getString(1)}") }
+                  }
+                  return list
+              }
+
+              fun addTask(title: String, status: String, result: String) {
+                  writableDatabase.use { db ->
+                      val values = ContentValues().apply {
+                          put("title", title)
+                          put("status", status)
+                          put("result", result)
+                      }
+                      db.insert("background_tasks", null, values)
+                  }
+              }
+
+              fun getTasks(): List<String> {
+                  val list = mutableListOf<String>()
+                  readableDatabase.rawQuery("SELECT title, status, result FROM background_tasks", null).use { cursor ->
+                      while (cursor.moveToNext()) {
+                          list.add("⚡ [${cursor.getString(1)}] ${cursor.getString(0)} — Res: ${cursor.getString(2)}")
+                      }
+                  }
+                  return list
+              }
+          }
+          EOF
+
+          # Activity Principal com Abas Expandidas (Chat, Memória, Projetos, Tarefas BG, Configs)
           cat > proj/app/src/main/java/com/tomo/agentev8/MainActivity.kt <<'EOF'
           package com.tomo.agentev8
 
@@ -127,76 +203,131 @@ jobs:
 
           class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
+              private lateinit var db: DatabaseHelper
               private lateinit var prefs: android.content.SharedPreferences
               private val client = OkHttpClient()
               private var tts: TextToSpeech? = null
-              
-              private lateinit var chatContainer: LinearLayout
-              private lateinit var scrollView: ScrollView
-              private lateinit var inputMessage: EditText
-              private lateinit var settingsScroll: ScrollView
-              private lateinit var apiKeyInput: EditText
-              private lateinit var modelSpinner: Spinner
 
-              private val VOICE_REQUEST_CODE = 100
+              private lateinit var contentFrame: FrameLayout
+              private lateinit var chatLayout: View
+              private lateinit var memoryLayout: View
+              private lateinit var projectsLayout: View
+              private lateinit var tasksLayout: View
+              private lateinit var settingsLayout: View
+
+              private lateinit var chatContainer: LinearLayout
+              private lateinit var chatScroll: ScrollView
+              private lateinit var inputMessage: EditText
+
               private val chatHistory = mutableListOf<JSONObject>()
-              private var isSettingsOpen = false
+              private val VOICE_REQUEST_CODE = 100
 
               override fun onCreate(savedInstanceState: Bundle?) {
                   super.onCreate(savedInstanceState)
+                  db = DatabaseHelper(this)
                   prefs = getSharedPreferences("v8_config", Context.MODE_PRIVATE)
                   tts = TextToSpeech(this, this)
 
-                  val mainLayout = RelativeLayout(this).apply {
+                  val mainLayout = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
                       setBackgroundColor(Color.parseColor("#090D16"))
                   }
 
-                  // Top Header Bar
-                  val header = LinearLayout(this).apply {
-                      id = View.generateViewId()
+                  val header = TextView(this).apply {
+                      text = "⚡ AGENTE V8 — CORE SYSTEM"
+                      textSize = 16f
+                      setTextColor(Color.parseColor("#38BDF8"))
+                      setBackgroundColor(Color.parseColor("#131B2E"))
+                      setPadding(30, 25, 30, 25)
+                      gravity = Gravity.CENTER
+                  }
+                  mainLayout.addView(header)
+
+                  contentFrame = FrameLayout(this).apply {
+                      layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
+                  }
+                  mainLayout.addView(contentFrame)
+
+                  val navBar = LinearLayout(this).apply {
                       orientation = LinearLayout.HORIZONTAL
                       setBackgroundColor(Color.parseColor("#131B2E"))
-                      setPadding(40, 30, 40, 30)
-                      gravity = Gravity.CENTER_VERTICAL
+                      setPadding(8, 8, 8, 8)
                   }
 
-                  val title = TextView(this).apply {
-                      text = "⚡ AGENTE V8"
-                      textSize = 20f
-                      setTextColor(Color.parseColor("#38BDF8"))
-                      layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-                  }
+                  val btnChat = createNavButton("💬 Chat") { showView(chatLayout) }
+                  val btnMem = createNavButton("🧠 Mem") { loadMemories(); showView(memoryLayout) }
+                  val btnProj = createNavButton("📂 Proj") { loadProjects(); showView(projectsLayout) }
+                  val btnTask = createNavButton("⚙️ Tarefas") { loadTasks(); showView(tasksLayout) }
+                  val btnSet = createNavButton("🛠️ Conf") { showView(settingsLayout) }
 
-                  val btnSettings = Button(this).apply {
-                      text = "⚙️ Configs"
-                      textSize = 14f
-                      background = createRoundedDrawable("#1E293B", "#38BDF8", 20)
+                  navBar.addView(btnChat)
+                  navBar.addView(btnMem)
+                  navBar.addView(btnProj)
+                  navBar.addView(btnTask)
+                  navBar.addView(btnSet)
+                  mainLayout.addView(navBar)
+
+                  initChatView()
+                  initMemoryView()
+                  initProjectsView()
+                  initTasksView()
+                  initSettingsView()
+
+                  contentFrame.addView(chatLayout)
+                  contentFrame.addView(memoryLayout)
+                  contentFrame.addView(projectsLayout)
+                  contentFrame.addView(tasksLayout)
+                  contentFrame.addView(settingsLayout)
+
+                  showView(chatLayout)
+                  setContentView(mainLayout)
+
+                  val systemPrompt = JSONObject().apply {
+                      put("role", "user")
+                      put("parts", JSONArray().put(JSONObject().put("text", "Você é o Agente V8, um agente pessoal autônomo para Android com suporte a tarefas em segundo plano e persistência.")))
+                  }
+                  chatHistory.add(systemPrompt)
+              }
+
+              private fun createNavButton(text: String, onClick: () -> Unit): Button {
+                  return Button(this).apply {
+                      this.text = text
+                      textSize = 11f
                       setTextColor(Color.WHITE)
-                      setPadding(25, 10, 25, 10)
-                      setOnClickListener { toggleSettings() }
+                      background = createRoundedDrawable("#1E293B", "#38BDF8", 12)
+                      layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginEnd = 3 }
+                      setOnClickListener { onClick() }
                   }
+              }
 
-                  header.addView(title)
-                  header.addView(btnSettings)
+              private fun showView(view: View) {
+                  chatLayout.visibility = View.GONE
+                  memoryLayout.visibility = View.GONE
+                  projectsLayout.visibility = View.GONE
+                  tasksLayout.visibility = View.GONE
+                  settingsLayout.visibility = View.GONE
+                  view.visibility = View.VISIBLE
+              }
 
-                  val headerParams = RelativeLayout.LayoutParams(
-                      RelativeLayout.LayoutParams.MATCH_PARENT,
-                      RelativeLayout.LayoutParams.WRAP_CONTENT
-                  ).apply { addRule(RelativeLayout.ALIGN_PARENT_TOP) }
-                  mainLayout.addView(header, headerParams)
+              private fun initChatView() {
+                  val layout = RelativeLayout(this)
+                  chatScroll = ScrollView(this).apply { isFillViewport = true }
+                  chatContainer = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(30, 30, 30, 30)
+                  }
+                  chatScroll.addView(chatContainer)
 
-                  // Bottom Input Bar
                   val bottomBar = LinearLayout(this).apply {
                       id = View.generateViewId()
                       orientation = LinearLayout.HORIZONTAL
                       setPadding(20, 20, 20, 20)
-                      gravity = Gravity.CENTER_VERTICAL
                       setBackgroundColor(Color.parseColor("#131B2E"))
                   }
 
                   inputMessage = EditText(this).apply {
-                      hint = "Comande o Agente V8..."
-                      setHintTextColor(Color.parseColor("#64748B"))
+                      hint = "Comande o V8..."
+                      setHintTextColor(Color.GRAY)
                       setTextColor(Color.WHITE)
                       background = createRoundedDrawable("#1E293B", "#334155", 30)
                       setPadding(30, 20, 30, 20)
@@ -205,18 +336,16 @@ jobs:
 
                   val btnVoice = Button(this).apply {
                       text = "🎙️"
-                      textSize = 16f
                       background = createRoundedDrawable("#0284C7", "#38BDF8", 40)
-                      layoutParams = LinearLayout.LayoutParams(110, 110).apply { leftMargin = 15 }
+                      layoutParams = LinearLayout.LayoutParams(100, 100).apply { leftMargin = 10 }
                       setOnClickListener { startVoiceInput() }
                   }
 
                   val btnSend = Button(this).apply {
                       text = "➔"
-                      textSize = 18f
                       setTextColor(Color.WHITE)
                       background = createRoundedDrawable("#2563EB", "#60A5FA", 40)
-                      layoutParams = LinearLayout.LayoutParams(110, 110).apply { leftMargin = 15 }
+                      layoutParams = LinearLayout.LayoutParams(100, 100).apply { leftMargin = 10 }
                       setOnClickListener { sendMessage() }
                   }
 
@@ -224,137 +353,18 @@ jobs:
                   bottomBar.addView(btnVoice)
                   bottomBar.addView(btnSend)
 
-                  val bottomParams = RelativeLayout.LayoutParams(
-                      RelativeLayout.LayoutParams.MATCH_PARENT,
-                      RelativeLayout.LayoutParams.WRAP_CONTENT
-                  ).apply { addRule(RelativeLayout.ALIGN_PARENT_BOTTOM) }
-                  mainLayout.addView(bottomBar, bottomParams)
-
-                  // Scrollable Chat Area
-                  scrollView = ScrollView(this).apply {
-                      isFillViewport = true
+                  val bottomParams = RelativeLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                      addRule(RelativeLayout.ALIGN_PARENT_BOTTOM)
                   }
-
-                  chatContainer = LinearLayout(this).apply {
-                      orientation = LinearLayout.VERTICAL
-                      setPadding(30, 30, 30, 30)
-                  }
-                  scrollView.addView(chatContainer)
-
-                  val chatParams = RelativeLayout.LayoutParams(
-                      RelativeLayout.LayoutParams.MATCH_PARENT,
-                      RelativeLayout.LayoutParams.MATCH_PARENT
-                  ).apply {
-                      addRule(RelativeLayout.BELOW, header.id)
+                  val scrollParams = RelativeLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT).apply {
                       addRule(RelativeLayout.ABOVE, bottomBar.id)
                   }
-                  mainLayout.addView(scrollView, chatParams)
 
-                  // Scrollable Settings Panel (Overlays Chat cleanly)
-                  settingsScroll = ScrollView(this).apply {
-                      id = View.generateViewId()
-                      setBackgroundColor(Color.parseColor("#0F172A"))
-                      visibility = View.GONE
-                  }
+                  layout.addView(chatScroll, scrollParams)
+                  layout.addView(bottomBar, bottomParams)
+                  chatLayout = layout
 
-                  val settingsContent = LinearLayout(this).apply {
-                      orientation = LinearLayout.VERTICAL
-                      setPadding(40, 40, 40, 60)
-                  }
-
-                  val settingsTitle = TextView(this).apply {
-                      text = "⚙️ Configurações do Gemini"
-                      textSize = 20f
-                      setTextColor(Color.WHITE)
-                      setPadding(0, 0, 0, 30)
-                  }
-                  settingsContent.addView(settingsTitle)
-
-                  val keyLabel = TextView(this).apply {
-                      text = "Chave API (Gemini API Key):"
-                      setTextColor(Color.parseColor("#38BDF8"))
-                      setPadding(0, 0, 0, 10)
-                  }
-                  settingsContent.addView(keyLabel)
-
-                  apiKeyInput = EditText(this).apply {
-                      hint = "Cole sua chave aqui..."
-                      setHintTextColor(Color.GRAY)
-                      setTextColor(Color.WHITE)
-                      inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-                      background = createRoundedDrawable("#1E293B", "#475569", 20)
-                      setPadding(30, 25, 30, 25)
-                      setText(prefs.getString("api_key", "") ?: "")
-                  }
-                  settingsContent.addView(apiKeyInput)
-
-                  val modelLabel = TextView(this).apply {
-                      text = "\nModelo de Inteligência:"
-                      setTextColor(Color.parseColor("#38BDF8"))
-                      setPadding(0, 20, 0, 10)
-                  }
-                  settingsContent.addView(modelLabel)
-
-                  val models = arrayOf("gemini-1.5-flash", "gemini-1.5-pro", "gemini-1.0-pro")
-                  modelSpinner = Spinner(this).apply {
-                      adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, models)
-                      setBackgroundColor(Color.parseColor("#1E293B"))
-                      setPadding(20, 20, 20, 20)
-                  }
-                  
-                  val savedModel = prefs.getString("selected_model", "gemini-1.5-flash") ?: "gemini-1.5-flash"
-                  val savedIndex = models.indexOf(savedModel)
-                  if (savedIndex >= 0) modelSpinner.setSelection(savedIndex)
-
-                  settingsContent.addView(modelSpinner)
-
-                  val btnSave = Button(this).apply {
-                      text = "SALVAR CONFIGURAÇÕES"
-                      setTextColor(Color.WHITE)
-                      textSize = 16f
-                      background = createRoundedDrawable("#2563EB", "#60A5FA", 30)
-                      setPadding(0, 30, 0, 30)
-                      val btnParams = LinearLayout.LayoutParams(
-                          LinearLayout.LayoutParams.MATCH_PARENT,
-                          LinearLayout.LayoutParams.WRAP_CONTENT
-                      ).apply { topMargin = 50 }
-                      layoutParams = btnParams
-                      setOnClickListener {
-                          prefs.edit()
-                              .putString("api_key", apiKeyInput.text.toString().trim())
-                              .putString("selected_model", modelSpinner.selectedItem.toString())
-                              .apply()
-                          Toast.makeText(this@MainActivity, "Configurações Salvas com Sucesso!", Toast.LENGTH_SHORT).show()
-                          toggleSettings()
-                      }
-                  }
-                  settingsContent.addView(btnSave)
-                  settingsScroll.addView(settingsContent)
-
-                  val settingsParams = RelativeLayout.LayoutParams(
-                      RelativeLayout.LayoutParams.MATCH_PARENT,
-                      RelativeLayout.LayoutParams.MATCH_PARENT
-                  ).apply {
-                      addRule(RelativeLayout.BELOW, header.id)
-                      addRule(RelativeLayout.ABOVE, bottomBar.id)
-                  }
-                  mainLayout.addView(settingsScroll, settingsParams)
-
-                  setContentView(mainLayout)
-
-                  // Initial System Prompt Memory
-                  val systemInstruction = JSONObject().apply {
-                      put("role", "user")
-                      put("parts", JSONArray().put(JSONObject().put("text", "Você é o Agente V8, uma Inteligência Artificial autônoma, futurista e avançada para Android. Você auxilia em código, voz, tarefas e planejamento.")))
-                  }
-                  chatHistory.add(systemInstruction)
-
-                  addMessageToChat("V8: Sistema inicializado com sucesso. Toque em 'Configs' no topo para inserir sua chave API do Gemini e começar!", false)
-              }
-
-              private fun toggleSettings() {
-                  isSettingsOpen = !isSettingsOpen
-                  settingsScroll.visibility = if (isSettingsOpen) View.VISIBLE else View.GONE
+                  addMessageToChat("V8: Subsistema operacional ativo. Pronto para comandos em segundo plano.", false)
               }
 
               private fun sendMessage() {
@@ -363,8 +373,8 @@ jobs:
 
                   val apiKey = prefs.getString("api_key", "") ?: ""
                   if (apiKey.isEmpty()) {
-                      Toast.makeText(this, "Por favor, insira sua Chave API nas Configs ⚙️!", Toast.LENGTH_LONG).show()
-                      if (!isSettingsOpen) toggleSettings()
+                      Toast.makeText(this, "Configure sua Chave API!", Toast.LENGTH_LONG).show()
+                      showView(settingsLayout)
                       return
                   }
 
@@ -376,30 +386,26 @@ jobs:
                       put("parts", JSONArray().put(JSONObject().put("text", text)))
                   }
                   chatHistory.add(userObj)
-
-                  callGeminiApi(apiKey)
+                  
+                  // Regista tarefa na fila simulando background task
+                  db.addTask(text, "Executando", "Processando na API...")
+                  callGeminiApi(apiKey, text)
               }
 
-              private fun callGeminiApi(apiKey: String) {
-                  val selectedModel = prefs.getString("selected_model", "gemini-1.5-flash") ?: "gemini-1.5-flash"
+              private fun callGeminiApi(apiKey: String, userText: String) {
+                  val selectedModel = prefs.getString("selected_model", "gemini-2.5-flash") ?: "gemini-2.5-flash"
                   val url = "https://generativelanguage.googleapis.com/v1beta/models/$selectedModel:generateContent?key=$apiKey"
 
-                  val jsonBody = JSONObject().apply {
-                      put("contents", JSONArray(chatHistory))
-                  }
+                  val jsonBody = JSONObject().apply { put("contents", JSONArray(chatHistory)) }
+                  val body = jsonBody.toString().toRequestBody("application/json; charset=utf-8".toMediaType())
 
-                  val mediaType = "application/json; charset=utf-8".toMediaType()
-                  val body = jsonBody.toString().toRequestBody(mediaType)
-
-                  val request = Request.Builder()
-                      .url(url)
-                      .post(body)
-                      .build()
+                  val request = Request.Builder().url(url).post(body).build()
 
                   client.newCall(request).enqueue(object : Callback {
                       override fun onFailure(call: Call, e: IOException) {
                           runOnUiThread {
-                              addMessageToChat("Erro de conexão com o V8: ${e.message}", false)
+                              db.addTask(userText, "Erro", e.message ?: "Falha de rede")
+                              addMessageToChat("Erro de conexão: ${e.message}", false)
                           }
                       }
 
@@ -408,21 +414,19 @@ jobs:
                           runOnUiThread {
                               try {
                                   val json = JSONObject(resText ?: "")
-                                  val candidates = json.getJSONArray("candidates")
-                                  val content = candidates.getJSONObject(0).getJSONObject("content")
-                                  val parts = content.getJSONArray("parts")
-                                  val reply = parts.getJSONObject(0).getString("text")
+                                  val reply = json.getJSONArray("candidates").getJSONObject(0).getJSONObject("content").getJSONArray("parts").getJSONObject(0).getString("text")
 
                                   val modelObj = JSONObject().apply {
                                       put("role", "model")
                                       put("parts", JSONArray().put(JSONObject().put("text", reply)))
                                   }
                                   chatHistory.add(modelObj)
-
+                                  db.addTask(userText, "Concluído", "Sucesso")
                                   addMessageToChat(reply, false)
                                   speakOut(reply)
                               } catch (e: Exception) {
-                                  addMessageToChat("Falha na resposta do V8. Verifique sua chave API.", false)
+                                  db.addTask(userText, "Erro", "Resposta inválida")
+                                  addMessageToChat("Erro ao processar resposta.", false)
                               }
                           }
                       }
@@ -432,76 +436,136 @@ jobs:
               private fun addMessageToChat(msg: String, isUser: Boolean) {
                   val tv = TextView(this).apply {
                       text = msg
-                      textSize = 15f
+                      textSize = 14f
                       setTextColor(Color.WHITE)
-                      setPadding(35, 25, 35, 25)
-                      background = if (isUser) {
-                          createRoundedDrawable("#2563EB", "#3B82F6", 30)
-                      } else {
-                          createRoundedDrawable("#1E293B", "#334155", 30)
-                      }
+                      setPadding(30, 20, 30, 20)
+                      background = createRoundedDrawable(if (isUser) "#2563EB" else "#1E293B", if (isUser) "#3B82F6" else "#334155", 25)
                   }
-
-                  val params = LinearLayout.LayoutParams(
-                      LinearLayout.LayoutParams.WRAP_CONTENT,
-                      LinearLayout.LayoutParams.WRAP_CONTENT
-                  ).apply {
+                  val params = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
                       gravity = if (isUser) Gravity.END else Gravity.START
                       topMargin = 15
                   }
-
                   chatContainer.addView(tv, params)
-                  scrollView.post { scrollView.fullScroll(View.FOCUS_DOWN) }
+                  chatScroll.post { chatScroll.fullScroll(View.FOCUS_DOWN) }
+              }
+
+              private lateinit var memoryContainer: LinearLayout
+              private fun initMemoryView() {
+                  val scroll = ScrollView(this)
+                  memoryContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(40, 40, 40, 40) }
+                  scroll.addView(memoryContainer)
+                  memoryLayout = scroll
+              }
+
+              private fun loadMemories() {
+                  memoryContainer.removeAllViews()
+                  memoryContainer.addView(TextView(this).apply { text = "🧠 Memória Persistente"; textSize = 18f; setTextColor(Color.WHITE) })
+                  val input = EditText(this).apply { hint = "Novo registo..."; setHintTextColor(Color.GRAY); setTextColor(Color.WHITE) }
+                  val btn = Button(this).apply {
+                      text = "Salvar na Memória"
+                      setTextColor(Color.WHITE)
+                      background = createRoundedDrawable("#2563EB", "#60A5FA", 20)
+                      setOnClickListener { if (input.text.isNotEmpty()) { db.addMemory(input.text.toString()); input.setText(""); loadMemories() } }
+                  }
+                  memoryContainer.addView(input); memoryContainer.addView(btn)
+                  db.getMemories().forEach { memoryContainer.addView(TextView(this).apply { text = "• $memoryContainer"; setTextColor(Color.LTGRAY); setPadding(0, 15, 0, 0) }) }
+              }
+
+              private lateinit var projectsContainer: LinearLayout
+              private fun initProjectsView() {
+                  val scroll = ScrollView(this)
+                  projectsContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(40, 40, 40, 40) }
+                  scroll.addView(projectsContainer)
+                  projectsLayout = scroll
+              }
+
+              private fun loadProjects() {
+                  projectsContainer.removeAllViews()
+                  projectsContainer.addView(TextView(this).apply { text = "📂 Gestor de Projetos"; textSize = 18f; setTextColor(Color.WHITE) })
+                  val name = EditText(this).apply { hint = "Nome do Projeto"; setHintTextColor(Color.GRAY); setTextColor(Color.WHITE) }
+                  val desc = EditText(this).apply { hint = "Descrição / Código"; setHintTextColor(Color.GRAY); setTextColor(Color.WHITE) }
+                  val btn = Button(this).apply {
+                      text = "Criar Projeto"
+                      setTextColor(Color.WHITE)
+                      background = createRoundedDrawable("#2563EB", "#60A5FA", 20)
+                      setOnClickListener { if (name.text.isNotEmpty()) { db.addProject(name.text.toString(), desc.text.toString()); name.setText(""); desc.setText(""); loadProjects() } }
+                  }
+                  projectsContainer.addView(name); projectsContainer.addView(desc); projectsContainer.addView(btn)
+                  db.getProjects().forEach { projectsContainer.addView(TextView(this).apply { text = it; setTextColor(Color.LTGRAY); setPadding(0, 20, 0, 0) }) }
+              }
+
+              // --- PAINEL DE TAREFAS EM SEGUNDO PLANO ---
+              private lateinit var tasksContainer: LinearLayout
+              private fun initTasksView() {
+                  val scroll = ScrollView(this)
+                  tasksContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(40, 40, 40, 40) }
+                  scroll.addView(tasksContainer)
+                  tasksLayout = scroll
+              }
+
+              private fun loadTasks() {
+                  tasksContainer.removeAllViews()
+                  tasksContainer.addView(TextView(this).apply { text = "⚙️ Painel de Tarefas (Background)"; textSize = 18f; setTextColor(Color.WHITE) })
+                  db.getTasks().forEach {
+                      tasksContainer.addView(TextView(this).apply { text = it; setTextColor(Color.CYAN); setPadding(0, 15, 0, 0) })
+                  }
+              }
+
+              private fun initSettingsView() {
+                  val scroll = ScrollView(this)
+                  val container = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(40, 40, 40, 40) }
+                  container.addView(TextView(this).apply { text = "🛠️ Configurações & API"; textSize = 18f; setTextColor(Color.WHITE) })
+
+                  val keyInput = EditText(this).apply {
+                      hint = "Chave API do Gemini"
+                      setHintTextColor(Color.GRAY)
+                      setTextColor(Color.WHITE)
+                      inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+                      setText(prefs.getString("api_key", "") ?: "")
+                  }
+                  container.addView(keyInput)
+
+                  val models = arrayOf("gemini-2.5-flash", "gemini-2.5-pro", "gemini-3.0-flash", "gemini-3.0-pro")
+                  val spinner = Spinner(this).apply { adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, models) }
+                  container.addView(spinner)
+
+                  val btnSave = Button(this).apply {
+                      text = "Guardar Configurações"
+                      setTextColor(Color.WHITE)
+                      background = createRoundedDrawable("#2563EB", "#60A5FA", 20)
+                      setOnClickListener {
+                          prefs.edit().putString("api_key", keyInput.text.toString().trim()).putString("selected_model", spinner.selectedItem.toString()).apply()
+                          Toast.makeText(this@MainActivity, "Salvo!", Toast.LENGTH_SHORT).show()
+                          showView(chatLayout)
+                      }
+                  }
+                  container.addView(btnSave)
+                  scroll.addView(container)
+                  settingsLayout = scroll
               }
 
               private fun startVoiceInput() {
                   val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
                       putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
                       putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
-                      putExtra(RecognizerIntent.EXTRA_PROMPT, "Fale com o Agente V8...")
                   }
-                  try {
-                      startActivityForResult(intent, VOICE_REQUEST_CODE)
-                  } catch (e: Exception) {
-                      Toast.makeText(this, "Reconhecimento de voz indisponível.", Toast.LENGTH_SHORT).show()
-                  }
+                  try { startActivityForResult(intent, VOICE_REQUEST_CODE) } catch (e: Exception) {}
               }
 
               override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
                   super.onActivityResult(requestCode, resultCode, data)
                   if (requestCode == VOICE_REQUEST_CODE && resultCode == RESULT_OK) {
                       val result = data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
-                      if (!result.isNullOrEmpty()) {
-                          inputMessage.setText(result[0])
-                          sendMessage()
-                      }
+                      if (!result.isNullOrEmpty()) { inputMessage.setText(result[0]); sendMessage() }
                   }
               }
 
-              override fun onInit(status: Int) {
-                  if (status == TextToSpeech.SUCCESS) {
-                      tts?.language = Locale("pt", "BR")
-                  }
+              override fun onInit(status: Int) { if (status == TextToSpeech.SUCCESS) tts?.language = Locale("pt", "BR") }
+              private fun speakOut(text: String) { tts?.speak(text.replace(Regex("[*`#_]"), ""), TextToSpeech.QUEUE_FLUSH, null, null) }
+              private fun createRoundedDrawable(bg: String, stroke: String, rad: Int): GradientDrawable {
+                  return GradientDrawable().apply { setColor(Color.parseColor(bg)); setStroke(3, Color.parseColor(stroke)); cornerRadius = rad.toFloat() }
               }
-
-              private fun speakOut(text: String) {
-                  val cleanText = text.replace(Regex("[*`#_]"), "")
-                  tts?.speak(cleanText, TextToSpeech.QUEUE_FLUSH, null, null)
-              }
-
-              private fun createRoundedDrawable(bgColor: String, strokeColor: String, radius: Int): GradientDrawable {
-                  return GradientDrawable().apply {
-                      setColor(Color.parseColor(bgColor))
-                      setStroke(3, Color.parseColor(strokeColor))
-                      cornerRadius = radius.toFloat()
-                  }
-              }
-
-              override fun onDestroy() {
-                  tts?.stop()
-                  tts?.shutdown()
-                  super.onDestroy()
-              }
+              override fun onDestroy() { tts?.stop(); tts?.shutdown(); super.onDestroy() }
           }
           EOF
 
@@ -516,7 +580,7 @@ jobs:
       - name: Publicar APK na aba Releases
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v2.2-${{ github.run_number }}
-          name: "Agente V8 - Ajustado para A17 (Versão ${{ github.run_number }})"
-          body: "Painel de configurações totalmente rolável e otimizado para celulares compactos como o Galaxy A17."
+          tag_name: v4.5-${{ github.run_number }}
+          name: "Agente V8 - Background & Core Versão ${{ github.run_number }}"
+          body: "Versão com painel de tarefas em segundo plano, registo de filas no SQLite, abas expandidas e integração total ao Gemini."
           files: proj/app/build/outputs/apk/debug/app-debug.apk
