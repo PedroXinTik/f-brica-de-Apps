@@ -23,7 +23,7 @@ jobs:
         with:
           gradle-version: 8.5
 
-      - name: Criar projeto Android dentro da pasta proj
+      - name: Criar projeto Android limpo
         shell: bash
         run: |
           mkdir -p proj/app/src/main/java/com/tomo/agentev8 proj/app/src/main/res/values
@@ -74,7 +74,6 @@ jobs:
           }
           dependencies {
               implementation 'com.squareup.okhttp3:okhttp:4.12.0'
-              implementation 'org.json:json:20231018'
           }
           EOF
 
@@ -110,7 +109,7 @@ jobs:
               override fun onCreate(savedInstanceState: Bundle?) {
                   super.onCreate(savedInstanceState)
                   val tv = TextView(this).apply {
-                      text = "Agente V8 Rodando com Sucesso!"
+                      text = "Agente V8 Compilado com Sucesso!"
                       textSize = 20f
                       setTextColor(Color.WHITE)
                       setBackgroundColor(Color.parseColor("#0F172A"))
