@@ -1,4 +1,4 @@
-name: Compilar Agente V8
+name: Compilar e Publicar APK
 
 on:
   workflow_dispatch:
@@ -109,7 +109,7 @@ jobs:
               override fun onCreate(savedInstanceState: Bundle?) {
                   super.onCreate(savedInstanceState)
                   val tv = TextView(this).apply {
-                      text = "Agente V8 Compilado com Sucesso!"
+                      text = "Agente V8 Versão Release Ativa!"
                       textSize = 20f
                       setTextColor(Color.WHITE)
                       setBackgroundColor(Color.parseColor("#0F172A"))
@@ -127,8 +127,10 @@ jobs:
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon
 
-      - name: Salvar APK
-        uses: actions/upload-artifact@v4
+      - name: Publicar APK na aba Releases
+        uses: softprops/action-gh-release@v2
         with:
-          name: agente-v8-apk
-          path: proj/app/build/outputs/apk/debug/app-debug.apk
+          tag_name: v1.0-${{ github.run_number }}
+          name: "Agente V8 - Versão ${{ github.run_number }}"
+          body: "APK gerado automaticamente pela automação do Agente V8."
+          files: proj/app/build/outputs/apk/debug/app-debug.apk
