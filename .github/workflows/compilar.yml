@@ -1,4 +1,4 @@
-name: Compilar e Publicar APK
+name: Compilar e Publicar Agente V8 Completo
 
 on:
   workflow_dispatch:
@@ -23,7 +23,7 @@ jobs:
         with:
           gradle-version: 8.5
 
-      - name: Criar projeto Android com Tela de Configuração Gemini
+      - name: Criar projeto completo Agente V8
         shell: bash
         run: |
           mkdir -p proj/app/src/main/java/com/tomo/agentev8 proj/app/src/main/res/values
@@ -63,8 +63,8 @@ jobs:
                   applicationId 'com.tomo.agentev8'
                   minSdk 26
                   targetSdk 34
-                  versionCode 2
-                  versionName '1.1'
+                  versionCode 3
+                  versionName '2.0'
               }
               compileOptions {
                   sourceCompatibility JavaVersion.VERSION_17
@@ -81,7 +81,11 @@ jobs:
           <?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
               <uses-permission android:name="android.permission.INTERNET"/>
-              <application android:label="Agente V8" android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+              <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+              
+              <application 
+                  android:label="Agente V8" 
+                  android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
                   <activity android:name=".MainActivity" android:exported="true">
                       <intent-filter>
                           <action android:name="android.intent.action.MAIN"/>
@@ -102,108 +106,366 @@ jobs:
 
           import android.app.Activity
           import android.content.Context
+          import android.content.Intent
           import android.graphics.Color
+          import android.graphics.drawable.GradientDrawable
           import android.os.Bundle
+          import android.speech.RecognizerIntent
+          import android.speech.tts.TextToSpeech
           import android.text.InputType
           import android.view.Gravity
+          import android.view.View
+          import android.view.ViewGroup
           import android.widget.*
+          import okhttp3.*
+          import okhttp3.MediaType.Companion.toMediaType
+          import okhttp3.RequestBody.Companion.toRequestBody
+          import org.json.JSONArray
+          import org.json.JSONObject
+          import java.io.IOException
+          import java.util.Locale
 
-          class MainActivity : Activity() {
+          class MainActivity : Activity(), TextToSpeech.OnInitListener {
+
+              private lateinit var prefs: android.content.SharedPreferences
+              private val client = OkHttpClient()
+              private var tts: TextToSpeech? = null
+              
+              private lateinit var chatContainer: LinearLayout
+              private lateinit var scrollView: ScrollView
+              private lateinit var inputMessage: EditText
+              private lateinit var settingsPanel: LinearLayout
+              private lateinit var apiKeyInput: EditText
+              private lateinit var modelSpinner: Spinner
+
+              private val VOICE_REQUEST_CODE = 100
+              private val chatHistory = mutableListOf<JSONObject>()
+              private var isSettingsOpen = false
 
               override fun onCreate(savedInstanceState: Bundle?) {
                   super.onCreate(savedInstanceState)
+                  prefs = getSharedPreferences("v8_config", Context.MODE_PRIVATE)
+                  tts = TextToSpeech(this, this)
 
-                  val prefs = getSharedPreferences("v8_config", Context.MODE_PRIVATE)
+                  val mainLayout = RelativeLayout(this).apply {
+                      setBackgroundColor(Color.parseColor("#090D16"))
+                  }
 
-                  val rootLayout = LinearLayout(this).apply {
+                  // Top Bar Futuristic Header
+                  val header = LinearLayout(this).apply {
+                      id = View.generateViewId()
+                      orientation = LinearLayout.HORIZONTAL
+                      setBackgroundColor(Color.parseColor("#131B2E"))
+                      setPadding(40, 40, 40, 40)
+                      gravity = Gravity.CENTER_VERTICAL
+                  }
+
+                  val title = TextView(this).apply {
+                      text = "⚡ AGENTE V8"
+                      textSize = 20f
+                      setTextColor(Color.parseColor("#38BDF8"))
+                      layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                  }
+
+                  val btnSettings = Button(this).apply {
+                      text = "⚙️"
+                      textSize = 18f
+                      background = createRoundedDrawable("#1E293B", "#38BDF8", 30)
+                      setTextColor(Color.WHITE)
+                      setOnClickListener { toggleSettings() }
+                  }
+
+                  header.addView(title)
+                  header.addView(btnSettings)
+
+                  val headerParams = RelativeLayout.LayoutParams(
+                      RelativeLayout.LayoutParams.MATCH_PARENT,
+                      RelativeLayout.LayoutParams.WRAP_CONTENT
+                  ).apply { addRule(RelativeLayout.ALIGN_PARENT_TOP) }
+                  mainLayout.addView(header, headerParams)
+
+                  // Settings Panel (Expandable)
+                  settingsPanel = LinearLayout(this).apply {
+                      id = View.generateViewId()
                       orientation = LinearLayout.VERTICAL
                       setBackgroundColor(Color.parseColor("#0F172A"))
-                      setPadding(40, 60, 40, 40)
+                      setPadding(40, 30, 40, 30)
+                      visibility = View.GONE
                   }
 
-                  val titleText = TextView(this).apply {
-                      text = "⚙️ Configurações Agente V8"
-                      textSize = 22f
-                      setTextColor(Color.WHITE)
-                      gravity = Gravity.CENTER
-                      setPadding(0, 0, 0, 40)
-                  }
-                  rootLayout.addView(titleText)
-
-                  val keyLabel = TextView(this).apply {
-                      text = "Chave API do Gemini:"
-                      textSize = 16f
-                      setTextColor(Color.parseColor("#94A3B8"))
-                  }
-                  rootLayout.addView(keyLabel)
-
-                  val apiKeyInput = EditText(this).apply {
-                      hint = "Cole sua API Key aqui..."
-                      setHintTextColor(Color.parseColor("#64748B"))
+                  val keyLabel = TextView(this).apply { text = "API Key Gemini:"; setTextColor(Color.LTGRAY) }
+                  apiKeyInput = EditText(this).apply {
+                      hint = "Cole sua chave aqui..."
+                      setHintTextColor(Color.GRAY)
                       setTextColor(Color.WHITE)
                       inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-                      setBackgroundColor(Color.parseColor("#1E293B"))
-                      setPadding(30, 30, 30, 30)
+                      background = createRoundedDrawable("#1E293B", "#475569", 20)
+                      setPadding(25, 20, 25, 20)
                       setText(prefs.getString("api_key", ""))
                   }
-                  rootLayout.addView(apiKeyInput)
 
-                  val modelLabel = TextView(this).apply {
-                      text = "\nSelecione o Modelo:"
-                      textSize = 16f
-                      setTextColor(Color.parseColor("#94A3B8"))
-                  }
-                  rootLayout.addView(modelLabel)
-
+                  val modelLabel = TextView(this).apply { text = "Modelo Ativo:"; setTextColor(Color.LTGRAY) }
                   val models = arrayOf("gemini-1.5-flash", "gemini-1.5-pro", "gemini-1.0-pro")
-                  val spinner = Spinner(this).apply {
+                  modelSpinner = Spinner(this).apply {
+                      adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, models)
                       setBackgroundColor(Color.parseColor("#1E293B"))
                   }
 
-                  val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, models)
-                  spinner.adapter = adapter
-
-                  val savedModel = prefs.getString("selected_model", "gemini-1.5-flash")
-                  val savedIndex = models.indexOf(savedModel)
-                  if (savedIndex >= 0) spinner.setSelection(savedIndex)
-
-                  rootLayout.addView(spinner)
-
-                  val saveButton = Button(this).apply {
+                  val btnSave = Button(this).apply {
                       text = "SALVAR CONFIGURAÇÕES"
-                      setBackgroundColor(Color.parseColor("#2563EB"))
                       setTextColor(Color.WHITE)
-                      setPadding(0, 30, 0, 30)
-                  }
-
-                  val layoutParams = LinearLayout.LayoutParams(
-                      LinearLayout.LayoutParams.MATCH_PARENT,
-                      LinearLayout.LayoutParams.WRAP_CONTENT
-                  ).apply {
-                      topMargin = 50
-                  }
-
-                  saveButton.layoutParams = layoutParams
-
-                  saveButton.setOnClickListener {
-                      val key = apiKeyInput.text.toString().trim()
-                      val selectedModel = spinner.selectedItem.toString()
-
-                      if (key.isEmpty()) {
-                          Toast.makeText(this@MainActivity, "Por favor, insira uma API Key válida!", Toast.LENGTH_SHORT).show()
-                      } else {
+                      background = createRoundedDrawable("#2563EB", "#3B82F6", 25)
+                      setOnClickListener {
                           prefs.edit()
-                              .putString("api_key", key)
-                              .putString("selected_model", selectedModel)
+                              .putString("api_key", apiKeyInput.text.toString().trim())
+                              .putString("selected_model", modelSpinner.selectedItem.toString())
                               .apply()
-
-                          Toast.makeText(this@MainActivity, "Configurações salvas para $selectedModel!", Toast.LENGTH_SHORT).show()
+                          Toast.makeText(this@MainActivity, "Configurações Salvas!", Toast.LENGTH_SHORT).show()
+                          toggleSettings()
                       }
                   }
 
-                  rootLayout.addView(saveButton)
-                  setContentView(rootLayout)
+                  settingsPanel.addView(keyLabel)
+                  settingsPanel.addView(apiKeyInput)
+                  settingsPanel.addView(modelLabel)
+                  settingsPanel.addView(modelSpinner)
+                  settingsPanel.addView(btnSave)
+
+                  val settingsParams = RelativeLayout.LayoutParams(
+                      RelativeLayout.LayoutParams.MATCH_PARENT,
+                      RelativeLayout.LayoutParams.WRAP_CONTENT
+                  ).apply { addRule(RelativeLayout.BELOW, header.id) }
+                  mainLayout.addView(settingsPanel, settingsParams)
+
+                  // Bottom Input Control Bar
+                  val bottomBar = LinearLayout(this).apply {
+                      id = View.generateViewId()
+                      orientation = LinearLayout.HORIZONTAL
+                      setPadding(20, 20, 20, 20)
+                      gravity = Gravity.CENTER_VERTICAL
+                      setBackgroundColor(Color.parseColor("#131B2E"))
+                  }
+
+                  inputMessage = EditText(this).apply {
+                      hint = "Comande o Agente V8..."
+                      setHintTextColor(Color.parseColor("#64748B"))
+                      setTextColor(Color.WHITE)
+                      background = createRoundedDrawable("#1E293B", "#334155", 40)
+                      setPadding(35, 25, 35, 25)
+                      layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                  }
+
+                  val btnVoice = Button(this).apply {
+                      text = "🎙️"
+                      textSize = 18f
+                      background = createRoundedDrawable("#0284C7", "#38BDF8", 50)
+                      layoutParams = LinearLayout.LayoutParams(120, 120).apply { leftMargin = 15 }
+                      setOnClickListener { startVoiceInput() }
+                  }
+
+                  val btnSend = Button(this).apply {
+                      text = "➔"
+                      textSize = 18f
+                      setTextColor(Color.WHITE)
+                      background = createRoundedDrawable("#2563EB", "#60A5FA", 50)
+                      layoutParams = LinearLayout.LayoutParams(120, 120).apply { leftMargin = 15 }
+                      setOnClickListener { sendMessage() }
+                  }
+
+                  bottomBar.addView(inputMessage)
+                  bottomBar.addView(btnVoice)
+                  bottomBar.addView(btnSend)
+
+                  val bottomParams = RelativeLayout.LayoutParams(
+                      RelativeLayout.LayoutParams.MATCH_PARENT,
+                      RelativeLayout.LayoutParams.WRAP_CONTENT
+                  ).apply { addRule(RelativeLayout.ALIGN_PARENT_BOTTOM) }
+                  mainLayout.addView(bottomBar, bottomParams)
+
+                  // Chat View Area
+                  scrollView = ScrollView(this).apply {
+                      isFillViewport = true
+                  }
+
+                  chatContainer = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(30, 30, 30, 30)
+                  }
+                  scrollView.addView(chatContainer)
+
+                  val chatParams = RelativeLayout.LayoutParams(
+                      RelativeLayout.LayoutParams.MATCH_PARENT,
+                      RelativeLayout.LayoutParams.MATCH_PARENT
+                  ).apply {
+                      addRule(RelativeLayout.BELOW, header.id)
+                      addRule(RelativeLayout.ABOVE, bottomBar.id)
+                  }
+                  mainLayout.addView(scrollView, chatParams)
+
+                  setContentView(mainLayout)
+
+                  // System Instructions Header Memory
+                  val systemInstruction = JSONObject().apply {
+                      put("role", "user")
+                      put("parts", JSONArray().put(JSONObject().put("text", "Você é o Agente V8, uma Inteligência Artificial autônoma e futurista. Você ajuda o usuário com geração e correção de código, comandos de voz, planejamento, tarefas do Android e aprendizado adaptativo. Seja sempre preciso, inteligente e futurista nas respostas.")))
+                  }
+                  chatHistory.add(systemInstruction)
+
+                  addMessageToChat("V8: Módulo de Inteligência V8 Ativado. Como posso ajudar agora?", false)
               }
+
+              private fun toggleSettings() {
+                  isSettingsOpen = !isSettingsOpen
+                  settingsPanel.visibility = if (isSettingsOpen) View.VISIBLE else View.GONE
+              }
+
+              private fun sendMessage() {
+                  val text = inputMessage.text.toString().trim()
+                  if (text.isEmpty()) return
+
+                  val apiKey = prefs.getString("api_key", "")
+                  if (apiKey.isNull_or_Empty()) {
+                      Toast.makeText(this, "Configure sua Chave API nas configurações ⚙️!", Toast.LENGTH_LONG).show()
+                      toggleSettings()
+                      return
+                  }
+
+                  addMessageToChat(text, true)
+                  inputMessage.setText("")
+
+                  val userObj = JSONObject().apply {
+                      put("role", "user")
+                      put("parts", JSONArray().put(JSONObject().put("text", text)))
+                  }
+                  chatHistory.add(userObj)
+
+                  callGeminiApi(apiKey)
+              }
+
+              private fun callGeminiApi(apiKey: String) {
+                  val selectedModel = prefs.getString("selected_model", "gemini-1.5-flash")
+                  val url = "https://generativelanguage.googleapis.com/v1beta/models/$selectedModel:generateContent?key=$apiKey"
+
+                  val jsonBody = JSONObject().apply {
+                      put("contents", JSONArray(chatHistory))
+                  }
+
+                  val mediaType = "application/json; charset=utf-8".toMediaType()
+                  val body = jsonBody.toString().toRequestBody(mediaType)
+
+                  val request = Request.Builder()
+                      .url(url)
+                      .post(body)
+                      .build()
+
+                  client.newCall(request).enqueue(object : Callback {
+                      override fun onFailure(call: Call, e: IOException) {
+                          runOnUiThread {
+                              addMessageToChat("Erro de conexão com o V8: ${e.message}", false)
+                          }
+                      }
+
+                      override fun onResponse(call: Call, response: Response) {
+                          val resText = response.body?.string()
+                          runOnUiThread {
+                              try {
+                                  val json = JSONObject(resText ?: "")
+                                  val candidates = json.getJSONArray("candidates")
+                                  val content = candidates.getJSONObject(0).getJSONObject("content")
+                                  val parts = content.getJSONArray("parts")
+                                  val reply = parts.getJSONObject(0).getString("text")
+
+                                  val modelObj = JSONObject().apply {
+                                      put("role", "model")
+                                      put("parts", JSONArray().put(JSONObject().put("text", reply)))
+                                  }
+                                  chatHistory.add(modelObj)
+
+                                  addMessageToChat(reply, false)
+                                  speakOut(reply)
+                              } catch (e: Exception) {
+                                  addMessageToChat("Falha na resposta do V8. Verifique sua chave API ou modelo.", false)
+                              }
+                          }
+                      }
+                  })
+              }
+
+              private fun addMessageToChat(msg: String, isUser: Boolean) {
+                  val tv = TextView(this).apply {
+                      text = msg
+                      textSize = 15f
+                      setTextColor(Color.WHITE)
+                      setPadding(35, 25, 35, 25)
+                      background = if (isUser) {
+                          createRoundedDrawable("#2563EB", "#3B82F6", 30)
+                      } else {
+                          createRoundedDrawable("#1E293B", "#334155", 30)
+                      }
+                  }
+
+                  val params = LinearLayout.LayoutParams(
+                      LinearLayout.LayoutParams.WRAP_CONTENT,
+                      LinearLayout.LayoutParams.WRAP_CONTENT
+                  ).apply {
+                      gravity = if (isUser) Gravity.END else Gravity.START
+                      topMargin = 15
+                  }
+
+                  chatContainer.addView(tv, params)
+                  scrollView.post { scrollView.fullScroll(View.FOCUS_DOWN) }
+              }
+
+              private fun startVoiceInput() {
+                  val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                      putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                      putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
+                      putExtra(RecognizerIntent.EXTRA_PROMPT, "Fale com o Agente V8...")
+                  }
+                  try {
+                      startActivityForResult(intent, VOICE_REQUEST_CODE)
+                  } catch (e: Exception) {
+                      Toast.makeText(this, "Reconhecimento de voz não disponível.", Toast.LENGTH_SHORT).show()
+                  }
+              }
+
+              override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+                  super.onActivityResult(requestCode, resultCode, data)
+                  if (requestCode == VOICE_REQUEST_CODE && resultCode == RESULT_OK) {
+                      val result = data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+                      if (!result.isNullOrEmpty()) {
+                          inputMessage.setText(result[0])
+                          sendMessage()
+                      }
+                  }
+              }
+
+              override fun onInit(status: Int) {
+                  if (status == TextToSpeech.SUCCESS) {
+                      tts?.language = Locale("pt", "BR")
+                  }
+              }
+
+              private fun speakOut(text: String) {
+                  val cleanText = text.replace(Regex("[*`#_]"), "")
+                  tts?.speak(cleanText, TextToSpeech.QUEUE_FLUSH, null, null)
+              }
+
+              private fun createRoundedDrawable(bgColor: String, strokeColor: String, radius: Int): GradientDrawable {
+                  return GradientDrawable().apply {
+                      setColor(Color.parseColor(bgColor))
+                      setStroke(3, Color.parseColor(strokeColor))
+                      cornerRadius = radius.toFloat()
+                  }
+              }
+
+              override fun onDestroy() {
+                  tts?.stop()
+                  tts?.shutdown()
+                  super.onDestroy()
+              }
+
+              private fun String?.isNull_or_Empty(): Boolean = this == null || this.trim().isEmpty()
           }
           EOF
 
@@ -218,7 +480,7 @@ jobs:
       - name: Publicar APK na aba Releases
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.1-${{ github.run_number }}
-          name: "Agente V8 - Configurações Gemini (Versão ${{ github.run_number }})"
-          body: "APK atualizado com tela de inserção da chave API e seleção de modelos do Gemini."
+          tag_name: v2.0-${{ github.run_number }}
+          name: "Agente V8 - IA Completa Futurista (Versão ${{ github.run_number }})"
+          body: "Nova versão completa com Interface Futurista, Chat com Gemini, Voz (STT/TTS), Memória de Contexto e Menu de Configurações."
           files: proj/app/build/outputs/apk/debug/app-debug.apk
