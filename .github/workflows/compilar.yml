@@ -63,8 +63,8 @@ jobs:
                   applicationId 'com.tomo.agentev8'
                   minSdk 26
                   targetSdk 34
-                  versionCode 3
-                  versionName '2.0'
+                  versionCode 4
+                  versionName '2.1'
               }
               compileOptions {
                   sourceCompatibility JavaVersion.VERSION_17
@@ -151,7 +151,6 @@ jobs:
                       setBackgroundColor(Color.parseColor("#090D16"))
                   }
 
-                  // Top Bar Futuristic Header
                   val header = LinearLayout(this).apply {
                       id = View.generateViewId()
                       orientation = LinearLayout.HORIZONTAL
@@ -184,7 +183,6 @@ jobs:
                   ).apply { addRule(RelativeLayout.ALIGN_PARENT_TOP) }
                   mainLayout.addView(header, headerParams)
 
-                  // Settings Panel (Expandable)
                   settingsPanel = LinearLayout(this).apply {
                       id = View.generateViewId()
                       orientation = LinearLayout.VERTICAL
@@ -201,7 +199,7 @@ jobs:
                       inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
                       background = createRoundedDrawable("#1E293B", "#475569", 20)
                       setPadding(25, 20, 25, 20)
-                      setText(prefs.getString("api_key", ""))
+                      setText(prefs.getString("api_key", "") ?: "")
                   }
 
                   val modelLabel = TextView(this).apply { text = "Modelo Ativo:"; setTextColor(Color.LTGRAY) }
@@ -237,7 +235,6 @@ jobs:
                   ).apply { addRule(RelativeLayout.BELOW, header.id) }
                   mainLayout.addView(settingsPanel, settingsParams)
 
-                  // Bottom Input Control Bar
                   val bottomBar = LinearLayout(this).apply {
                       id = View.generateViewId()
                       orientation = LinearLayout.HORIZONTAL
@@ -282,7 +279,6 @@ jobs:
                   ).apply { addRule(RelativeLayout.ALIGN_PARENT_BOTTOM) }
                   mainLayout.addView(bottomBar, bottomParams)
 
-                  // Chat View Area
                   scrollView = ScrollView(this).apply {
                       isFillViewport = true
                   }
@@ -304,7 +300,6 @@ jobs:
 
                   setContentView(mainLayout)
 
-                  // System Instructions Header Memory
                   val systemInstruction = JSONObject().apply {
                       put("role", "user")
                       put("parts", JSONArray().put(JSONObject().put("text", "Você é o Agente V8, uma Inteligência Artificial autônoma e futurista. Você ajuda o usuário com geração e correção de código, comandos de voz, planejamento, tarefas do Android e aprendizado adaptativo. Seja sempre preciso, inteligente e futurista nas respostas.")))
@@ -323,8 +318,8 @@ jobs:
                   val text = inputMessage.text.toString().trim()
                   if (text.isEmpty()) return
 
-                  val apiKey = prefs.getString("api_key", "")
-                  if (apiKey.isNull_or_Empty()) {
+                  val apiKey = prefs.getString("api_key", "") ?: ""
+                  if (apiKey.isEmpty()) {
                       Toast.makeText(this, "Configure sua Chave API nas configurações ⚙️!", Toast.LENGTH_LONG).show()
                       toggleSettings()
                       return
@@ -343,7 +338,7 @@ jobs:
               }
 
               private fun callGeminiApi(apiKey: String) {
-                  val selectedModel = prefs.getString("selected_model", "gemini-1.5-flash")
+                  val selectedModel = prefs.getString("selected_model", "gemini-1.5-flash") ?: "gemini-1.5-flash"
                   val url = "https://generativelanguage.googleapis.com/v1beta/models/$selectedModel:generateContent?key=$apiKey"
 
                   val jsonBody = JSONObject().apply {
@@ -464,8 +459,6 @@ jobs:
                   tts?.shutdown()
                   super.onDestroy()
               }
-
-              private fun String?.isNull_or_Empty(): Boolean = this == null || this.trim().isEmpty()
           }
           EOF
 
@@ -480,7 +473,7 @@ jobs:
       - name: Publicar APK na aba Releases
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v2.0-${{ github.run_number }}
+          tag_name: v2.1-${{ github.run_number }}
           name: "Agente V8 - IA Completa Futurista (Versão ${{ github.run_number }})"
-          body: "Nova versão completa com Interface Futurista, Chat com Gemini, Voz (STT/TTS), Memória de Contexto e Menu de Configurações."
+          body: "Versão corrigida e polida com interface futurista, chat, voz e configurações do Gemini."
           files: proj/app/build/outputs/apk/debug/app-debug.apk
