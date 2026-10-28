@@ -1,1921 +1,62 @@
-package com.tomo.agentev8
-
-import android.app.Service
-import android.content.Context
-import android.content.Intent
-import android.content.res.Configuration
-import android.graphics.Color
-import android.graphics.PixelFormat
-import android.graphics.Typeface
-import android.graphics.drawable.GradientDrawable
-import android.os.Build
-import android.os.Handler
-import android.os.IBinder
-import android.os.Looper
-import android.view.Gravity
-import android.view.MotionEvent
-import android.view.View
-import android.view.WindowManager
-import android.widget.Button
-import android.widget.LinearLayout
-import android.widget.ScrollView
-import android.widget.TextView
-import android.widget.Toast
-import kotlin.math.abs
-
-/**
- * FloatingBubbleService.kt
- * Componente principal do Agente V8 v3.8 responsável por manter o botão flutuante
- * persistente sobre outros aplicativos (jogos, navegadores, etc.) no Galaxy A17.
- * Desenvolvido com mais de 400 linhas de lógica nativa em Kotlin para garantir
- * máxima estabilidade, suporte a arraste fluido, ajuste automático nas bordas
- * e painel de ações rápidas integrado.
- */
-class FloatingBubbleService : Service() {
-
-    private var windowManager: WindowManager? = null
-    private var floatingBubbleView: View? = null
-    private var actionMenuContainer: View? = null
-    
-    private var layoutParamsBubble: WindowManager.LayoutParams? = null
-    private var layoutParamsMenu: WindowManager.LayoutParams? = null
-    
-    private var isMenuExpanded: Boolean = false
-    private var screenWidth: Int = 0
-    private var screenHeight: Int = 0
-    
-    private val uiHandler = Handler(Looper.getMainLooper())
-
-    override fun onBind(intent: Intent?): IBinder? {
-        return null
-    }
-
-    override fun onCreate() {
-        super.onCreate()
-        initializeWindowManagerMetrics()
-        buildFloatingBubbleComponent()
-        buildActionMenuComponent()
-    }
-
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // Garante que o serviço rode de forma persistente em segundo plano
-        return START_STICKY
-    }
-
-    private fun initializeWindowManagerMetrics() {
-        windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            val metrics = windowManager?.currentWindowMetrics
-            val bounds = metrics?.bounds
-            screenWidth = bounds?.width() ?: 1080
-            screenHeight = bounds?.height() ?: 2400
-        } else {
-            @Suppress("DEPRECATION")
-            val display = windowManager?.defaultDisplay
-            val metrics = android.util.DisplayMetrics()
-            @Suppress("DEPRECATION")
-            display?.getMetrics(metrics)
-            screenWidth = metrics.widthPixels
-            screenHeight = metrics.heightPixels
-        }
-    }
-
-    private fun buildFloatingBubbleComponent() {
-        val bubbleLayout = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER
-            background = createCustomGradientBackground("#1E293B", "#0F172A", 36)
-            setPadding(16, 16, 16, 16)
-            elevation = 24f
-        }
-
-        val bubbleTitle = TextView(this).apply {
-            text = "V8"
-            setTextColor(Color.parseColor("#38BDF8"))
-            textSize = 15f
-            gravity = Gravity.CENTER
-            typeface = Typeface.DEFAULT_BOLD
-        }
-        bubbleLayout.addView(bubbleTitle)
-
-        val overlayType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-        } else {
-            @Suppress("DEPRECATION")
-            WindowManager.LayoutParams.TYPE_PHONE
-        }
-
-        layoutParamsBubble = WindowManager.LayoutParams(
-            160,
-            160,
-            overlayType,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                    WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.TOP or Gravity.START
-            x = 50
-            y = 300
-        }
-
-        bubbleLayout.setOnTouchListener(object : View.OnTouchListener {
-            private var initialX = 0
-            private var initialY = 0
-            private var initialTouchX = 0f
-            private var initialTouchY = 0f
-            private var isDragging = false
-            private var touchStartTime = 0L
-
-            override fun onTouch(v: View, event: MotionEvent): Boolean {
-                when (event.action) {
-                    MotionEvent.ACTION_DOWN -> {
-                        initialX = layoutParamsBubble?.x ?: 0
-                        initialY = layoutParamsBubble?.y ?: 0
-                        initialTouchX = event.rawX
-                        initialTouchY = event.rawY
-                        isDragging = false
-                        touchStartTime = System.currentTimeMillis()
-                        return true
-                    }
-                    MotionEvent.ACTION_MOVE -> {
-                        val deltaX = (event.rawX - initialTouchX).toInt()
-                        val deltaY = (event.rawY - initialTouchY).toInt()
-
-                        if (abs(deltaX) > 8 || abs(deltaY) > 8) {
-                            isDragging = true
-                        }
-
-                        layoutParamsBubble?.x = initialX + deltaX
-                        layoutParamsBubble?.y = initialY + deltaY
-
-                        try {
-                            windowManager?.updateViewLayout(floatingBubbleView, layoutParamsBubble)
-                        } catch (e: Exception) {
-                            // Log de erro silenciado para evitar crash em atualizações rápidas de layout
-                        }
-                        return true
-                    }
-                    MotionEvent.ACTION_UP -> {
-                        val touchDuration = System.currentTimeMillis() - touchStartTime
-                        if (!isDragging && touchDuration < 300) {
-                            toggleActionMenuState()
-                        } else {
-                            snapBubbleToNearestScreenEdge()
-                        }
-                        return true
-                    }
-                }
-                return false
-            }
-        })
-
-        floatingBubbleView = bubbleLayout
-        try {
-            windowManager?.addView(floatingBubbleView, layoutParamsBubble)
-        } catch (e: Exception) {
-            Toast.makeText(this, "Erro ao criar bolha flutuante: ${e.message}", Toast.LENGTH_SHORT).show()
-        }
-    }
-
-    private fun snapBubbleToNearestScreenEdge() {
-        val currentX = layoutParamsBubble?.x ?: 0
-        val midPoint = screenWidth / 2
-
-        val targetX = if (currentX < midPoint) {
-            20 // Encaixa na borda esquerda
-        } else {
-            screenWidth - 180 // Encaixa na borda direita
-        }
-
-        layoutParamsBubble?.x = targetX
-        try {
-            windowManager?.updateViewLayout(floatingBubbleView, layoutParamsBubble)
-        } catch (e: Exception) {
-            // Tratamento seguro de exceção de layout
-        }
-    }
-
-    private fun buildActionMenuComponent() {
-        val rootMenuLayout = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            background = createCustomGradientBackground("#090D16", "#131B2E", 24)
-            setPadding(24, 24, 24, 24)
-            visibility = View.GONE
-            elevation = 32f
-        }
-
-        val headerContainer = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setPadding(0, 0, 0, 16)
-            gravity = Gravity.CENTER_VERTICAL
-        }
-
-        val titleHeader = TextView(this).apply {
-            text = "⚡ PAINEL RÁPIDO V8"
-            setTextColor(Color.parseColor("#38BDF8"))
-            textSize = 14f
-            typeface = Typeface.DEFAULT_BOLD
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-        }
-        headerContainer.addView(titleHeader)
-
-        val btnCloseMenu = Button(this).apply {
-            text = "✕"
-            setTextColor(Color.WHITE)
-            textSize = 12f
-            setBackgroundColor(Color.TRANSPARENT)
-            layoutParams = LinearLayout.LayoutParams(80, 80)
-            setOnClickListener {
-                collapseActionMenu()
-            }
-        }
-        headerContainer.addView(btnCloseMenu)
-        rootMenuLayout.addView(headerContainer)
-
-        val scrollView = ScrollView(this).apply {
-            isFillViewport = true
-            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 600)
-        }
-
-        val buttonsListLayout = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-        }
-
-        // Botão 1: Chat Principal
-        buttonsListLayout.addView(createActionMenuButton("💬 Abrir Chat Principal") {
-            openMainActivityWithTab("chat")
-        })
-
-        // Botão 2: Laboratório de Evolução (Tentativa e Erro)
-        buttonsListLayout.addView(createActionMenuButton("🧬 Laboratório de Evolução") {
-            openMainActivityWithTab("evolution")
-        })
-
-        // Botão 3: Tarefas em Segundo Plano
-        buttonsListLayout.addView(createActionMenuButton("⚙️ Tarefas Ativas") {
-            openMainActivityWithTab("tasks")
-        })
-
-        // Botão 4: Memória do Agente
-        buttonsListLayout.addView(createActionMenuButton("🧠 Memória Persistente") {
-            openMainActivityWithTab("memory")
-        })
-
-        // Botão 5: Projetos do Sistema
-        buttonsListLayout.addView(createActionMenuButton("📂 Projetos V8") {
-            openMainActivityWithTab("projects")
-        })
-
-        // Botão 6: Minimizar / Ocultar Bolha
-        buttonsListLayout.addView(createActionMenuButton("🎙️ Ocultar Temporariamente") {
-            collapseActionMenu()
-            Toast.makeText(this@FloatingBubbleService, "Bolha minimizada com sucesso.", Toast.LENGTH_SHORT).show()
-        })
-
-        scrollView.addView(buttonsListLayout)
-        rootMenuLayout.addView(scrollView)
-
-        val overlayType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-        } else {
-            @Suppress("DEPRECATION")
-            WindowManager.LayoutParams.TYPE_PHONE
-        }
-
-        layoutParamsMenu = WindowManager.LayoutParams(
-            650,
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            overlayType,
-            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                    WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.TOP or Gravity.START
-            x = 150
-            y = 450
-        }
-
-        actionMenuContainer = rootMenuLayout
-        try {
-            windowManager?.addView(actionMenuContainer, layoutParamsMenu)
-        } catch (e: Exception) {
-            // Tratamento de exceção do menu
-        }
-    }
-
-    private fun createActionMenuButton(textLabel: String, onClickAction: () -> Unit): Button {
-        return Button(this).apply {
-            text = textLabel
-            setTextColor(Color.WHITE)
-            textSize = 13f
-            gravity = Gravity.CENTER_VERTICAL or Gravity.START
-            setPadding(30, 20, 30, 20)
-            background = createCustomGradientBackground("#1E293B", "#334155", 16)
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply {
-                setMargins(0, 8, 0, 8)
-            }
-            setOnClickListener {
-                onClickAction()
-            }
-        }
-    }
-
-    private fun toggleActionMenuState() {
-        if (isMenuExpanded) {
-            collapseActionMenu()
-        } else {
-            expandActionMenu()
-        }
-    }
-
-    private fun expandActionMenu() {
-        if (actionMenuContainer != null) {
-            // Posiciona o menu próximo à bolha de forma inteligente
-            val currentBubbleX = layoutParamsBubble?.x ?: 100
-            val currentBubbleY = layoutParamsBubble?.y ?: 300
-
-            layoutParamsMenu?.x = if (currentBubbleX > screenWidth / 2) {
-                currentBubbleX - 520
-            } else {
-                currentBubbleX + 180
-            }
-            layoutParamsMenu?.y = currentBubbleY.coerceIn(50, screenHeight - 900)
-
-            try {
-                windowManager?.updateViewLayout(actionMenuContainer, layoutParamsMenu)
-                actionMenuContainer?.visibility = View.VISIBLE
-                isMenuExpanded = true
-            } catch (e: Exception) {
-                // Tratamento de atualização de view
-            }
-        }
-    }
-
-    private fun collapseActionMenu() {
-        if (actionMenuContainer != null) {
-            actionMenuContainer?.visibility = View.GONE
-            isMenuExpanded = false
-        }
-    }
-
-    private fun openMainActivityWithTab(tabName: String) {
-        collapseActionMenu()
-        val intent = Intent(this, MainActivity::class.java).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-            putExtra("target_tab", tabName)
-        }
-        try {
-            startActivity(intent)
-        } catch (e: Exception) {
-            Toast.makeText(this, "Erro ao abrir painel principal: ${e.message}", Toast.LENGTH_SHORT).show()
-        }
-    }
-
-    private fun createCustomGradientBackground(startColorHex: String, endColorHex: String, cornerRadiusDp: Int): GradientDrawable {
-        val colors = intArrayOf(
-            Color.parseColor(startColorHex),
-            Color.parseColor(endColorHex)
-        )
-        return GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, colors).apply {
-            cornerRadius = cornerRadiusDp.toFloat()
-            setStroke(2, Color.parseColor("#38BDF8"))
-        }
-    }
-
-    override fun onConfigurationChanged(newConfig: Configuration) {
-        super.onConfigurationChanged(newConfig)
-        initializeWindowManagerMetrics()
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        uiHandler.removeCallbacksAndMessages(null)
-        try {
-            if (floatingBubbleView != null) {
-                windowManager?.removeView(floatingBubbleView)
-                floatingBubbleView = null
-            }
-            if (actionMenuContainer != null) {
-                windowManager?.removeView(actionMenuContainer)
-                actionMenuContainer = null
-            }
-        } catch (e: Exception) {
-            // Limpeza segura de recursos da janela flutuante
-        }
-    }
-}
-
-package com.tomo.agentev8
-
-import android.content.Context
-import android.media.AudioFormat
-import android.media.AudioRecord
-import android.media.MediaRecorder
-import android.os.Handler
-import android.os.Looper
-import android.util.Log
-import java.io.File
-import java.io.FileInputStream
-import java.io.FileOutputStream
-import java.io.IOException
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
-
-/**
- * AudioRecordManager.kt
- * Componente avançado do Agente V8 v3.8 responsável por capturar áudio em segundo plano
- * de forma totalmente nativa e otimizada para o Galaxy A17.
- * Evita totalmente o uso de Intents nativos do sistema (como o pop-up branco do Google),
- * permitindo processamento de comandos por voz fluidos, limpos e sem interrupções em jogos.
- */
-class AudioRecordManager(private val context: Context) {
-
-    companion object {
-        private const val TAG = "AudioRecordManager"
-        private const val SAMPLE_RATE_IN_HZ = 44100
-        private const val CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO
-        private const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT
-    }
-
-    private var audioRecord: AudioRecord? = null
-    private var bufferSizeInBytes: Int = 0
-    private var isRecordingActive: Boolean = false
-    private var recordingWorkerThread: Thread? = null
-    
-    private var rawPcmAudioFile: File? = null
-    private var finalWavAudioFile: File? = null
-
-    private val mainHandler = Handler(Looper.getMainLooper())
-    
-    private var onAudioAmplitudeChangedListener: ((Int) -> Unit)? = null
-    private var onRecordingStateChangedListener: ((Boolean) -> Unit)? = null
-    private var onAudioChunkReadyListener: ((ByteArray) -> Unit)? = null
-
-    init {
-        calculateOptimalBufferSize()
-    }
-
-    private fun calculateOptimalBufferSize() {
-        bufferSizeInBytes = AudioRecord.getMinBufferSize(
-            SAMPLE_RATE_IN_HZ,
-            CHANNEL_CONFIG,
-            AUDIO_FORMAT
-        )
-        if (bufferSizeInBytes == AudioRecord.ERROR || bufferSizeInBytes == AudioRecord.ERROR_BAD_VALUE) {
-            bufferSizeInBytes = SAMPLE_RATE_IN_HZ * 2
-        }
-    }
-
-    fun setAudioAmplitudeListener(listener: (Int) -> Unit) {
-        this.onAudioAmplitudeChangedListener = listener
-    }
-
-    fun setRecordingStateListener(listener: (Boolean) -> Unit) {
-        this.onRecordingStateChangedListener = listener
-    }
-
-    fun setAudioChunkReadyListener(listener: (ByteArray) -> Unit) {
-        this.onAudioChunkReadyListener = listener
-    }
-
-    @Synchronized
-    fun startBackgroundRecording(fileName: String = "v8_voice_command.pcm"): Boolean {
-        if (isRecordingActive) {
-            Log.w(TAG, "A gravação já está em andamento.")
-            return false
-        }
-
-        try {
-            rawPcmAudioFile = File(context.cacheDir, fileName)
-            if (rawPcmAudioFile?.exists() == true) {
-                rawPcmAudioFile?.delete()
-            }
-            rawPcmAudioFile?.createNewFile()
-
-            audioRecord = AudioRecord(
-                MediaRecorder.AudioSource.MIC,
-                SAMPLE_RATE_IN_HZ,
-                CHANNEL_CONFIG,
-                AUDIO_FORMAT,
-                bufferSizeInBytes
-            )
-
-            if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
-                Log.e(TAG, "Falha crítica: AudioRecord não foi inicializado corretamente.")
-                releaseAudioRecordResources()
-                return false
-            }
-
-            audioRecord?.startRecording()
-            isRecordingActive = true
-            notifyRecordingStateChanged(true)
-
-            recordingWorkerThread = Thread({
-                processAudioStreamLoop()
-            }, "V8_Audio_Worker_Thread")
-            
-            recordingWorkerThread?.start()
-            Log.i(TAG, "Gravação em segundo plano iniciada com sucesso.")
-            return true
-
-        } catch (securityException: SecurityException) {
-            Log.e(TAG, "Permissão de microfone negada: ${securityException.message}")
-            isRecordingActive = false
-            notifyRecordingStateChanged(false)
-            releaseAudioRecordResources()
-            return false
-        } catch (e: Exception) {
-            Log.e(TAG, "Erro ao iniciar o gravador de áudio: ${e.message}")
-            isRecordingActive = false
-            notifyRecordingStateChanged(false)
-            releaseAudioRecordResources()
-            return false
-        }
-    }
-
-    private fun processAudioStreamLoop() {
-        val audioBuffer = ByteArray(bufferSizeInBytes)
-        var fileOutputStream: FileOutputStream? = null
-
-        try {
-            fileOutputStream = FileOutputStream(rawPcmAudioFile)
-
-            while (isRecordingActive) {
-                val bytesRead = audioRecord?.read(audioBuffer, 0, audioBuffer.size) ?: 0
-                if (bytesRead > 0) {
-                    fileOutputStream.write(audioBuffer, 0, bytesRead)
-                    
-                    // Notifica pedaço de áudio bruto para processamento em tempo real
-                    val chunkCopy = audioBuffer.copyOf(bytesRead)
-                    mainHandler.post {
-                        onAudioChunkReadyListener?.invoke(chunkCopy)
-                    }
-
-                    // Calcula amplitude para animação visual do microfone
-                    computeAndDispatchAudioAmplitude(audioBuffer, bytesRead)
-                }
-            }
-        } catch (ioException: IOException) {
-            Log.e(TAG, "Erro de I/O durante o loop de áudio: ${ioException.message}")
-        } finally {
-            try {
-                fileOutputStream?.flush()
-                fileOutputStream?.close()
-            } catch (closeException: IOException) {
-                Log.e(TAG, "Erro ao fechar stream de áudio: ${closeException.message}")
-            }
-        }
-    }
-
-    private fun computeAndDispatchAudioAmplitude(buffer: ByteArray, readSize: Int) {
-        var sumSquare = 0.0
-        var index = 0
-        while (index < readSize - 1) {
-            val sample = (buffer[index].toInt() and 0xFF) or (buffer[index + 1].toInt() shl 8)
-            sumSquare += sample * sample
-            index += 2
-        }
-        val amplitude = if (readSize > 0) Math.sqrt(sumSquare / (readSize / 2)).toInt() else 0
-        
-        mainHandler.post {
-            onAudioAmplitudeChangedListener?.invoke(amplitude)
-        }
-    }
-
-    @Synchronized
-    fun stopBackgroundRecordingAndExportWav(): File? {
-        if (!isRecordingActive) {
-            Log.w(TAG, "Tentativa de parar gravação, mas nenhuma sessão estava ativa.")
-            return null
-        }
-
-        isRecordingActive = false
-        notifyRecordingStateChanged(false)
-
-        try {
-            audioRecord?.stop()
-            audioRecord?.release()
-            audioRecord = null
-
-            recordingWorkerThread?.join(1500)
-            recordingWorkerThread = null
-
-            if (rawPcmAudioFile != null && rawPcmAudioFile!!.exists()) {
-                finalWavAudioFile = File(context.cacheDir, "v8_command_final.wav")
-                val conversionSuccess = convertPcmFileToWavFormat(rawPcmAudioFile!!, finalWavAudioFile!!)
-                if (conversionSuccess) {
-                    Log.i(TAG, "Áudio convertido com sucesso para WAV: ${finalWavAudioFile?.absolutePath}")
-                    return finalWavAudioFile
-                }
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Erro ao finalizar gravação e exportar WAV: ${e.message}")
-        } finally {
-            releaseAudioRecordResources()
-        }
-
-        return null
-    }
-
-    @Synchronized
-    fun cancelAndDiscardRecording() {
-        isRecordingActive = false
-        notifyRecordingStateChanged(false)
-        releaseAudioRecordResources()
-
-        try {
-            if (rawPcmAudioFile?.exists() == true) {
-                rawPcmAudioFile?.delete()
-            }
-            if (finalWavAudioFile?.exists() == true) {
-                finalWavAudioFile?.delete()
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Erro ao descartar arquivos temporários de áudio: ${e.message}")
-        }
-        Log.i(TAG, "Sessão de áudio cancelada e descartada.")
-    }
-
-    private fun releaseAudioRecordResources() {
-        try {
-            audioRecord?.stop()
-            audioRecord?.release()
-        } catch (e: Exception) {
-            // Silencia exceções de liberação de hardware
-        }
-        audioRecord = null
-    }
-
-    private fun notifyRecordingStateChanged(isActive: Boolean) {
-        mainHandler.post {
-            onRecordingStateChangedListener?.invoke(isActive)
-        }
-    }
-
-    private fun convertPcmFileToWavFormat(pcmFile: File, wavFile: File): Boolean {
-        if (!pcmFile.exists()) return false
-
-        var fileInputStream: FileInputStream? = null
-        var fileOutputStream: FileOutputStream? = null
-
-        try {
-            val rawDataLength = pcmFile.length()
-            val totalDataLength = rawDataLength + 36
-            val channels = 1
-            val byteRate = SAMPLE_RATE_IN_HZ * channels * 16 / 8
-
-            val wavHeader = ByteArray(44)
-            // Chunk ID "RIFF"
-            wavHeader[0] = 'R'.code.toByte()
-            wavHeader[1] = 'I'.code.toByte()
-            wavHeader[2] = 'F'.code.toByte()
-            wavHeader[3] = 'F'.code.toByte()
-            // Total Data Length
-            wavHeader[4] = (totalDataLength and 0xff).toByte()
-            wavHeader[5] = ((totalDataLength shr 8) and 0xff).toByte()
-            wavHeader[6] = ((totalDataLength shr 16) and 0xff).toByte()
-            wavHeader[7] = ((totalDataLength shr 24) and 0xff).toByte()
-            // Format "WAVE"
-            wavHeader[8] = 'W'.code.toByte()
-            wavHeader[9] = 'A'.code.toByte()
-            wavHeader[10] = 'V'.code.toByte()
-            wavHeader[11] = 'E'.code.toByte()
-            // Subchunk 1 ID "fmt "
-            wavHeader[12] = 'f'.code.toByte()
-            wavHeader[13] = 'm'.code.toByte()
-            wavHeader[14] = 't'.code.toByte()
-            wavHeader[15] = ' '.code.toByte()
-            // Subchunk 1 Size (16 for PCM)
-            wavHeader[16] = 16
-            wavHeader[17] = 0
-            wavHeader[18] = 0
-            wavHeader[19] = 0
-            // Audio Format (1 for PCM)
-            wavHeader[20] = 1
-            wavHeader[21] = 0
-            // Channels (1 for Mono)
-            wavHeader[22] = channels.toByte()
-            wavHeader[23] = 0
-            // Sample Rate
-            wavHeader[24] = (SAMPLE_RATE_IN_HZ and 0xff).toByte()
-            wavHeader[25] = ((SAMPLE_RATE_IN_HZ shr 8) and 0xff).toByte()
-            wavHeader[26] = ((SAMPLE_RATE_IN_HZ shr 16) and 0xff).toByte()
-            wavHeader[27] = ((SAMPLE_RATE_IN_HZ shr 24) and 0xff).toByte()
-            // Byte Rate
-            wavHeader[28] = (byteRate and 0xff).toByte()
-            wavHeader[29] = ((byteRate shr 8) and 0xff).toByte()
-            wavHeader[30] = ((byteRate shr 16) and 0xff).toByte()
-            wavHeader[31] = ((byteRate shr 24) and 0xff).toByte()
-            // Block Align
-            wavHeader[32] = (channels * 16 / 8).toByte()
-            wavHeader[33] = 0
-            // Bits Per Sample
-            wavHeader[34] = 16
-            wavHeader[35] = 0
-            // Subchunk 2 ID "data"
-            wavHeader[36] = 'd'.code.toByte()
-            wavHeader[37] = 'a'.code.toByte()
-            wavHeader[38] = 't'.code.toByte()
-            wavHeader[39] = 'a'.code.toByte()
-            // Subchunk 2 Size (Raw Audio Length)
-            wavHeader[40] = (rawDataLength and 0xff).toByte()
-            wavHeader[41] = ((rawDataLength shr 8) and 0xff).toByte()
-            wavHeader[42] = ((rawDataLength shr 16) and 0xff).toByte()
-            wavHeader[43] = ((rawDataLength shr 24) and 0xff).toByte()
-
-            fileInputStream = FileInputStream(pcmFile)
-            fileOutputStream = FileOutputStream(wavFile)
-
-            fileOutputStream.write(wavHeader, 0, 44)
-
-            val transferBuffer = ByteArray(bufferSizeInBytes)
-            var bytesReadCount: Int
-            while (fileInputStream.read(transferBuffer).also { bytesReadCount = it } != -1) {
-                fileOutputStream.write(transferBuffer, 0, bytesReadCount)
-            }
-
-            fileOutputStream.flush()
-            return true
-
-        } catch (e: Exception) {
-            Log.e(TAG, "Erro crítico na conversão PCM para WAV: ${e.message}")
-            return false
-        } finally {
-            try {
-                fileInputStream?.close()
-                fileOutputStream?.close()
-            } catch (ex: Exception) {
-                Log.e(TAG, "Erro ao fechar fluxos de conversão: ${ex.message}")
-            }
-        }
-    }
-
-    fun isRecordingActiveNow(): Boolean = isRecordingActive
-}
-
-package com.tomo.agentev8
-
-import android.content.ContentValues
-import android.content.Context
-import android.database.sqlite.SQLiteDatabase
-import android.database.sqlite.SQLiteOpenHelper
-import android.os.Handler
-import android.os.Looper
-import android.util.Log
-import org.json.JSONArray
-import org.json.JSONObject
-import java.util.concurrent.Executors
-import java.util.concurrent.ScheduledExecutorService
-import java.util.concurrent.TimeUnit
-
-/**
- * EvolutionLabManager.kt
- * Módulo de Inteligência Artificial e Aprendizado por Reforço do Agente V8 v3.8.
- * Responsável por executar simulações de tentativa, erro, avaliação de fitness,
- * mutação de parâmetros de decisão e persistência de evolução autônoma no Galaxy A17.
- */
-class EvolutionLabManager(private val context: Context) {
-
-    companion object {
-        private const val TAG = "EvolutionLabManager"
-        private const val DATABASE_NAME = "v8_evolution_lab.db"
-        private const val DATABASE_VERSION = 1
-        
-        private const val TABLE_TRIALS = "evolution_trials"
-        private const val TABLE_METRICS = "evolution_metrics"
-        private const val TABLE_WEIGHTS = "neural_weights"
-    }
-
-    private val dbHelper = EvolutionDatabaseHelper(context)
-    private val backgroundExecutor: ScheduledExecutorService = Executors.newScheduledThreadPool(2)
-    private val mainHandler = Handler(Looper.getMainLooper())
-
-    private var isEvolutionTrainingActive: Boolean = false
-    private var onTrainingProgressListener: ((String, Int, Double) -> Unit)? = null
-    private var onTrainingCompletedListener: ((JSONObject) -> Unit)? = null
-
-    /**
-     * Helper interno de banco de dados SQLite isolado para o laboratório de evolução.
-     */
-    private class EvolutionDatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME, null, DATABASE_VERSION) {
-        override fun onCreate(db: SQLiteDatabase) {
-            val createTrialsTable = ("CREATE TABLE " + TABLE_TRIALS + " ("
-                    + "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-                    + "goal_name TEXT, "
-                    + "attempt_number INTEGER, "
-                    + "fitness_score REAL, "
-                    + "is_successful INTEGER, "
-                    + "timestamp INTEGER)")
-
-            val createMetricsTable = ("CREATE TABLE " + TABLE_METRICS + " ("
-                    + "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-                    + "session_id TEXT, "
-                    + "total_generations INTEGER, "
-                    + "success_rate REAL, "
-                    + "optimized_parameters TEXT)")
-
-            val createWeightsTable = ("CREATE TABLE " + TABLE_WEIGHTS + " ("
-                    + "key TEXT PRIMARY KEY, "
-                    + "weight_value REAL)")
-
-            db.execSQL(createTrialsTable)
-            db.execSQL(createMetricsTable)
-            db.execSQL(createWeightsTable)
-            Log.i(TAG, "Tabelas do Laboratório de Evolução criadas com sucesso.")
-        }
-
-        override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-            db.execSQL("DROP TABLE IF EXISTS $TABLE_TRIALS")
-            db.execSQL("DROP TABLE IF EXISTS $TABLE_METRICS")
-            db.execSQL("DROP TABLE IF EXISTS $TABLE_WEIGHTS")
-            onCreate(db)
-        }
-    }
-
-    fun setOnTrainingProgressListener(listener: (String, Int, Double) -> Unit) {
-        this.onTrainingProgressListener = listener
-    }
-
-    fun setOnTrainingCompletedListener(listener: (JSONObject) -> Unit) {
-        this.onTrainingCompletedListener = listener
-    }
-
-    /**
-     * Inicia um ciclo completo de treinamento por tentativa e erro em segundo plano.
-     */
-    fun startEvolutionTrainingCycle(goalDescription: String, maxGenerations: Int = 50) {
-        if (isEvolutionTrainingActive) {
-            Log.w(TAG, "Ciclo de evolução já está em andamento.")
-            return
-        }
-
-        isEvolutionTrainingActive = true
-        Log.i(TAG, "Iniciando ciclo de evolução para a meta: '$goalDescription' com $maxGenerations gerações.")
-
-        backgroundExecutor.execute {
-            var currentGeneration = 1
-            var bestFitnessScore = 0.0
-            var successfulAttemptsCount = 0
-            val sessionId = "SESSION_${System.currentTimeMillis()}"
-
-            while (isEvolutionTrainingActive && currentGeneration <= maxGenerations) {
-                try {
-                    // Simulação de mutação e avaliação de tentativa e erro
-                    val trialResult = simulateTrialAndErrorStep(currentGeneration, goalDescription)
-                    val fitness = trialResult.getDouble("fitness")
-                    val isSuccess = trialResult.getBoolean("success")
-
-                    if (fitness > bestFitnessScore) {
-                        bestFitnessScore = fitness
-                    }
-
-                    if (isSuccess) {
-                        successfulAttemptsCount++
-                    }
-
-                    // Salva tentativa no SQLite
-                    saveTrialToDatabase(goalDescription, currentGeneration, fitness, isSuccess)
-
-                    // Notifica progresso na UI thread
-                    val currentSuccessRate = (successfulAttemptsCount.toDouble() / currentGeneration.toDouble()) * 100.0
-                    mainHandler.post {
-                        onTrainingProgressListener?.invoke(goalDescription, currentGeneration, currentSuccessRate)
-                    }
-
-                    Thread.sleep(120) // Pausa controlada para estabilidade do processador
-                    currentGeneration++
-                } catch (e: InterruptedException) {
-                    Log.w(TAG, "Thread de treinamento interrompida.")
-                    break
-                } catch (e: Exception) {
-                    Log.e(TAG, "Erro durante o ciclo de evolução: ${e.message}")
-                }
-            }
-
-            isEvolutionTrainingActive = false
-            val finalSuccessRate = if (maxGenerations > 0) (successfulAttemptsCount.toDouble() / maxGenerations.toDouble()) * 100.0 else 0.0
-
-            val summaryJson = JSONObject().apply {
-                put("session_id", sessionId)
-                put("goal", goalDescription)
-                put("total_generations", maxGenerations)
-                put("best_fitness", bestFitnessScore)
-                put("success_rate", finalSuccessRate)
-                put("status", "COMPLETED")
-            }
-
-            saveSessionMetricsToDatabase(sessionId, maxGenerations, finalSuccessRate, summaryJson.toString())
-
-            mainHandler.post {
-                onTrainingCompletedListener?.invoke(summaryJson)
-            }
-            Log.i(TAG, "Ciclo de evolução concluído com sucesso. Taxa de sucesso: $finalSuccessRate%")
-        }
-    }
-
-    private fun simulateTrialAndErrorStep(generation: Int, goal: String): JSONObject {
-        val randomFactor = Math.random()
-        // Algoritmo heurístico simulado de adaptação de pesos
-        val baseFitness = (generation * 1.8) + (randomFactor * 25.0)
-        val clampedFitness = if (baseFitness > 100.0) 100.0 else baseFitness
-        val isSuccessful = clampedFitness >= 75.0
-
-        return JSONObject().apply {
-            put("generation", generation)
-            put("fitness", clampedFitness)
-            put("success", isSuccessful)
-            put("mutation_rate", randomFactor)
-        }
-    }
-
-    private fun saveTrialToDatabase(goal: String, attempt: Int, fitness: Double, success: Boolean) {
-        try {
-            val db = dbHelper.writableDatabase
-            val values = ContentValues().apply {
-                put("goal_name", goal)
-                put("attempt_number", attempt)
-                put("fitness_score", fitness)
-                put("is_successful", if (success) 1 else 0)
-                put("timestamp", System.currentTimeMillis())
-            }
-            db.insert(TABLE_TRIALS, null, values)
-        } catch (e: Exception) {
-            Log.e(TAG, "Erro ao salvar tentativa no banco: ${e.message}")
-        }
-    }
-
-    private fun saveSessionMetricsToDatabase(sessionId: String, totalGenerations: Int, successRate: Double, paramsJson: String) {
-        try {
-            val db = dbHelper.writableDatabase
-            val values = ContentValues().apply {
-                put("session_id", sessionId)
-                put("total_generations", totalGenerations)
-                put("success_rate", successRate)
-                put("optimized_parameters", paramsJson)
-            }
-            db.insert(TABLE_METRICS, null, values)
-        } catch (e: Exception) {
-            Log.e(TAG, "Erro ao salvar métricas de sessão: ${e.message}")
-        }
-    }
-
-    fun getHistoricalEvolutionStats(): JSONArray {
-        val jsonArray = JSONArray()
-        try {
-            val db = dbHelper.readableDatabase
-            val cursor = db.rawQuery("SELECT session_id, total_generations, success_rate, optimized_parameters FROM $TABLE_METRICS ORDER BY id DESC LIMIT 20", null)
-            
-            while (cursor.moveToNext()) {
-                val item = JSONObject().apply {
-                    put("session_id", cursor.getString(0))
-                    put("total_generations", cursor.getInt(1))
-                    put("success_rate", cursor.getDouble(2))
-                    put("parameters", cursor.getString(3))
-                }
-                jsonArray.put(item)
-            }
-            cursor.close()
-        } catch (e: Exception) {
-            Log.e(TAG, "Erro ao buscar histórico de evolução: ${e.message}")
-        }
-        return jsonArray
-    }
-
-    fun updateNeuralWeight(key: String, value: Double) {
-        try {
-            val db = dbHelper.writableDatabase
-            val values = ContentValues().apply {
-                put("key", key)
-                put("weight_value", value)
-            }
-            db.insertWithOnConflict(TABLE_WEIGHTS, null, values, SQLiteDatabase.CONFLICT_REPLACE)
-        } catch (e: Exception) {
-            Log.e(TAG, "Erro ao atualizar peso neural: ${e.message}")
-        }
-    }
-
-    fun getNeuralWeight(key: String, defaultValue: Double = 0.5): Double {
-        var weight = defaultValue
-        try {
-            val db = dbHelper.readableDatabase
-            val cursor = db.rawQuery("SELECT weight_value FROM $TABLE_WEIGHTS WHERE key = ?", arrayOf(key))
-            if (cursor.moveToFirst()) {
-                weight = cursor.getDouble(0)
-            }
-            cursor.close()
-        } catch (e: Exception) {
-            Log.e(TAG, "Erro ao recuperar peso neural: ${e.message}")
-        }
-        return weight
-    }
-
-    fun stopEvolutionTraining() {
-        isEvolutionTrainingActive = false
-        Log.i(TAG, "Solicitação de parada do treinamento enviada.")
-    }
-
-    fun clearAllEvolutionData() {
-        try {
-            val db = dbHelper.writableDatabase
-            db.execSQL("DELETE FROM $TABLE_TRIALS")
-            db.execSQL("DELETE FROM $TABLE_METRICS")
-            db.execSQL("DELETE FROM $TABLE_WEIGHTS")
-            Log.i(TAG, "Todos os dados do laboratório de evolução foram limpos.")
-        } catch (e: Exception) {
-            Log.e(TAG, "Erro ao limpar dados de evolução: ${e.message}")
-        }
-    }
-
-    fun releaseResources() {
-        try {
-            stopEvolutionTraining()
-            backgroundExecutor.shutdown()
-            dbHelper.close()
-            Log.i(TAG, "Recursos do EvolutionLabManager liberados com sucesso.")
-        } catch (e: Exception) {
-            Log.e(TAG, "Erro ao liberar recursos do laboratório: ${e.message}")
-        }
-    }
-}
-
-package com.tomo.agentev8
-
-import android.content.ContentValues
-import android.content.Context
-import android.database.sqlite.SQLiteDatabase
-import android.database.sqlite.SQLiteOpenHelper
-import android.util.Log
-import org.json.JSONArray
-import org.json.JSONObject
-
-/**
- * DatabaseHelper.kt
- * Módulo central de persistência de dados do Agente V8 v3.8.
- * Responsável por gerenciar o banco de dados SQLite local, armazenando memórias de longo prazo,
- * projetos ativos, histórico de tarefas em segundo plano e logs do sistema de forma segura e otimizada.
- */
-class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME, null, DATABASE_VERSION) {
-
-    companion object {
-        private const val TAG = "DatabaseHelper"
-        private const val DATABASE_NAME = "agentev8_master_v38.db"
-        private const val DATABASE_VERSION = 1
-
-        // Nomes das tabelas principais
-        private const val TABLE_MEMORY = "v8_persistent_memory"
-        private const val TABLE_PROJECTS = "v8_projects_registry"
-        private const val TABLE_TASKS = "v8_background_tasks"
-        private const val TABLE_SETTINGS = "v8_system_configurations"
-    }
-
-    override fun onCreate(db: SQLiteDatabase) {
-        try {
-            val createMemoryTable = ("CREATE TABLE " + TABLE_MEMORY + " ("
-                    + "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-                    + "memory_key TEXT UNIQUE, "
-                    + "memory_content TEXT, "
-                    + "category TEXT, "
-                    + "timestamp INTEGER)")
-
-            val createProjectsTable = ("CREATE TABLE " + TABLE_PROJECTS + " ("
-                    + "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-                    + "project_name TEXT UNIQUE, "
-                    + "project_description TEXT, "
-                    + "status TEXT, "
-                    + "created_at INTEGER)")
-
-            val createTasksTable = ("CREATE TABLE " + TABLE_TASKS + " ("
-                    + "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-                    + "task_title TEXT, "
-                    + "task_status TEXT, "
-                    + "execution_result TEXT, "
-                    + "timestamp INTEGER)")
-
-            val createSettingsTable = ("CREATE TABLE " + TABLE_SETTINGS + " ("
-                    + "config_key TEXT PRIMARY KEY, "
-                    + "config_value TEXT)")
-
-            db.execSQL(createMemoryTable)
-            db.execSQL(createProjectsTable)
-            db.execSQL(createTasksTable)
-            db.execSQL(createSettingsTable)
-
-            Log.i(TAG, "Todas as tabelas principais do Agente V8 foram criadas com sucesso.")
-        } catch (e: Exception) {
-            Log.e(TAG, "Erro crítico ao criar tabelas no banco de dados: ${e.message}")
-        }
-    }
-
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        try {
-            db.execSQL("DROP TABLE IF EXISTS $TABLE_MEMORY")
-            db.execSQL("DROP TABLE IF EXISTS $TABLE_PROJECTS")
-            db.execSQL("DROP TABLE IF EXISTS $TABLE_TASKS")
-            db.execSQL("DROP TABLE IF EXISTS $TABLE_SETTINGS")
-            onCreate(db)
-            Log.i(TAG, "Banco de dados atualizado com sucesso da versão $oldVersion para $newVersion.")
-        } catch (e: Exception) {
-            Log.e(TAG, "Erro ao atualizar o banco de dados: ${e.message}")
-        }
-    }
-
-    // ==========================================
-    // GERENCIAMENTO DE MEMÓRIA PERSISTENTE
-    // ==========================================
-
-    fun saveMemoryItem(key: String, content: String, category: String = "geral"): Boolean {
-        return try {
-            val db = writableDatabase
-            val values = ContentValues().apply {
-                put("memory_key", key)
-                put("memory_content", content)
-                put("category", category)
-                put("timestamp", System.currentTimeMillis())
-            }
-            val result = db.insertWithOnConflict(TABLE_MEMORY, null, values, SQLiteDatabase.CONFLICT_REPLACE)
-            result != -1L
-        } catch (e: Exception) {
-            Log.e(TAG, "Erro ao salvar item de memória: ${e.message}")
-            false
-        }
-    }
-
-    fun getAllMemoriesList(): List<String> {
-        val memoryList = mutableListOf<String>()
-        try {
-            val db = readableDatabase
-            val cursor = db.rawQuery("SELECT memory_key, memory_content, category FROM $TABLE_MEMORY ORDER BY id DESC", null)
-            while (cursor.moveToNext()) {
-                val key = cursor.getString(0)
-                val content = cursor.getString(1)
-                val category = cursor.getString(2)
-                memoryList.add("[$category] $key: $content")
-            }
-            cursor.close()
-        } catch (e: Exception) {
-            Log.e(TAG, "Erro ao buscar memórias: ${e.message}")
-        }
-        return memoryList
-    }
-
-    fun deleteMemoryItem(key: String): Boolean {
-        return try {
-            val db = writableDatabase
-            val rows = db.delete(TABLE_MEMORY, "memory_key = ?", arrayOf(key))
-            rows > 0
-        } catch (e: Exception) {
-            Log.e(TAG, "Erro ao deletar memória: ${e.message}")
-            false
-        }
-    }
-
-    // ==========================================
-    // GERENCIAMENTO DE PROJETOS DO SISTEMA
-    // ==========================================
-
-    fun saveProjectRecord(name: String, description: String, status: String = "Ativo"): Boolean {
-        return try {
-            val db = writableDatabase
-            val values = ContentValues().apply {
-                put("project_name", name)
-                put("project_description", description)
-                put("status", status)
-                put("created_at", System.currentTimeMillis())
-            }
-            val result = db.insertWithOnConflict(TABLE_PROJECTS, null, values, SQLiteDatabase.CONFLICT_REPLACE)
-            result != -1L
-        } catch (e: Exception) {
-            Log.e(TAG, "Erro ao salvar projeto: ${e.message}")
-            false
-        }
-    }
-
-    fun getAllProjectsRegistry(): List<String> {
-        val projectsList = mutableListOf<String>()
-        try {
-            val db = readableDatabase
-            val cursor = db.rawQuery("SELECT project_name, project_description, status FROM $TABLE_PROJECTS ORDER BY id DESC", null)
-            while (cursor.moveToNext()) {
-                val name = cursor.getString(0)
-                val desc = cursor.getString(1)
-                val status = cursor.getString(2)
-                projectsList.add("📂 $name ($status): $desc")
-            }
-            cursor.close()
-        } catch (e: Exception) {
-            Log.e(TAG, "Erro ao buscar projetos: ${e.message}")
-        }
-        return projectsList
-    }
-
-    // ==========================================
-    // GERENCIAMENTO DE TAREfas EM SEGUNDO PLANO
-    // ==========================================
-
-    fun logBackgroundTaskExecution(title: String, status: String, result: String): Boolean {
-        return try {
-            val db = writableDatabase
-            val values = ContentValues().apply {
-                put("task_title", title)
-                put("task_status", status)
-                put("execution_result", result)
-                put("timestamp", System.currentTimeMillis())
-            }
-            val res = db.insert(TABLE_TASKS, null, values)
-            res != -1L
-        } catch (e: Exception) {
-            Log.e(TAG, "Erro ao registrar tarefa: ${e.message}")
-            false
-        }
-    }
-
-    fun getRecentBackgroundTasks(limit: Int = 50): JSONArray {
-        val jsonArray = JSONArray()
-        try {
-            val db = readableDatabase
-            val cursor = db.rawQuery("SELECT task_title, task_status, execution_result, timestamp FROM $TABLE_TASKS ORDER BY id DESC LIMIT $limit", null)
-            while (cursor.moveToNext()) {
-                val taskObj = JSONObject().apply {
-                    put("title", cursor.getString(0))
-                    put("status", cursor.getString(1))
-                    put("result", cursor.getString(2))
-                    put("timestamp", cursor.getLong(3))
-                }
-                jsonArray.put(taskObj)
-            }
-            cursor.close()
-        } catch (e: Exception) {
-            Log.e(TAG, "Erro ao buscar histórico de tarefas: ${e.message}")
-        }
-        return jsonArray
-    }
-
-    // ==========================================
-    // CONFIGURAÇÕES DO SISTEMA (KEY-VALUE)
-    // ==========================================
-
-    fun setSystemConfiguration(key: String, value: String): Boolean {
-        return try {
-            val db = writableDatabase
-            val values = ContentValues().apply {
-                put("config_key", key)
-                put("config_value", value)
-            }
-            val res = db.insertWithOnConflict(TABLE_SETTINGS, null, values, SQLiteDatabase.CONFLICT_REPLACE)
-            res != -1L
-        } catch (e: Exception) {
-            Log.e(TAG, "Erro ao salvar configuração: ${e.message}")
-            false
-        }
-    }
-
-    fun getSystemConfiguration(key: String, defaultValue: String = ""): String {
-        var value = defaultValue
-        try {
-            val db = readableDatabase
-            val cursor = db.rawQuery("SELECT config_value FROM $TABLE_SETTINGS WHERE config_key = ?", arrayOf(key))
-            if (cursor.moveToFirst()) {
-                value = cursor.getString(0)
-            }
-            cursor.close()
-        } catch (e: Exception) {
-            Log.e(TAG, "Erro ao recuperar configuração: ${e.message}")
-        }
-        return value
-    }
-
-    // ==========================================
-    // LIMPEZA GERAL DO BANCO DE DADOS
-    // ==========================================
-
-    fun clearCompleteDatabaseData(): Boolean {
-        return try {
-            val db = writableDatabase
-            db.execSQL("DELETE FROM $TABLE_MEMORY")
-            db.execSQL("DELETE FROM $TABLE_PROJECTS")
-            db.execSQL("DELETE FROM $TABLE_TASKS")
-            db.execSQL("DELETE FROM $TABLE_SETTINGS")
-            Log.i(TAG, "Banco de dados limpo com sucesso.")
-            true
-        } catch (e: Exception) {
-            Log.e(TAG, "Erro ao limpar banco de dados: ${e.message}")
-            false
-        }
-    }
-}
-package com.tomo.agentev8
-
-import android.app.Activity
-import android.content.Context
-import android.content.Intent
-import android.content.SharedPreferences
-import android.graphics.Color
-import android.graphics.Typeface
-import android.graphics.drawable.GradientDrawable
-import android.net.Uri
-import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
-import android.provider.Settings
-import android.view.Gravity
-import android.view.View
-import android.view.ViewGroup
-import android.widget.*
-import okhttp3.*
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.RequestBody.Companion.toRequestBody
-import org.json.JSONArray
-import org.json.JSONObject
-import java.io.File
-import java.io.IOException
-
-class MainActivity : Activity() {
-
-    private lateinit var dbHelper: DatabaseHelper
-    private lateinit var audioManager: AudioRecordManager
-    private lateinit var evolutionManager: EvolutionLabManager
-    private lateinit var sharedPreferences: SharedPreferences
-    private val httpClient = OkHttpClient()
-
-    private lateinit var contentFrameContainer: FrameLayout
-    private lateinit var chatTabView: View
-    private lateinit var memoryTabView: View
-    private lateinit var projectsTabView: View
-    private lateinit var evolutionTabView: View
-    private lateinit var tasksTabView: View
-    private lateinit var settingsTabView: View
-
-    private lateinit var chatMessagesContainer: LinearLayout
-    private lateinit var chatScrollWrapper: ScrollView
-    private lateinit var inputMessageEditText: EditText
-    
-    private val conversationHistoryList = mutableListOf<JSONObject>()
-    private val uiMainHandler = Handler(Looper.getMainLooper())
-    private var idlePersonalityRunnable: Runnable? = null
-
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        
-        dbHelper = DatabaseHelper(this)
-        audioManager = AudioRecordManager(this)
-        evolutionManager = EvolutionLabManager(this)
-        sharedPreferences = getSharedPreferences("v8_master_prefs", Context.MODE_PRIVATE)
-
-        val mainRootLayout = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.parseColor("#090D16"))
-        }
-
-        val headerBanner = TextView(this).apply {
-            text = "⚡ AGENTE V8 — v3.8 MODULAR PRO"
-            textSize = 15f
-            setTextColor(Color.parseColor("#38BDF8"))
-            setBackgroundColor(Color.parseColor("#131B2E"))
-            setPadding(20, 24, 20, 24)
-            gravity = Gravity.CENTER
-            typeface = Typeface.DEFAULT_BOLD
-        }
-        mainRootLayout.addView(headerBanner)
-
-        contentFrameContainer = FrameLayout(this).apply {
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
-        }
-        mainRootLayout.addView(contentFrameContainer)
-
-        val navigationBar = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setBackgroundColor(Color.parseColor("#131B2E"))
-            setPadding(8, 8, 8, 8)
-        }
-
-        navigationBar.addView(createNavigationTabButton("💬 Chat") { switchActiveView(chatTabView) })
-        navigationBar.addView(createNavigationTabButton("🧠 Memória") { loadMemoriesUI(); switchActiveView(memoryTabView) })
-        navigationBar.addView(createNavigationTabButton("📂 Projetos") { loadProjectsUI(); switchActiveView(projectsTabView) })
-        navigationBar.addView(createNavigationTabButton("🧬 EvoLab") { loadEvolutionUI(); switchActiveView(evolutionTabView) })
-        navigationBar.addView(createNavigationTabButton("⚙️ Tarefas") { loadTasksUI(); switchActiveView(tasksTabView) })
-        navigationBar.addView(createNavigationTabButton("🛠️ Ajustes") { switchActiveView(settingsTabView) })
-
-        mainRootLayout.addView(navigationBar)
-
-        initializeChatTabComponent()
-        initializeMemoryTabComponent()
-        initializeProjectsTabComponent()
-        initializeEvolutionTabComponent()
-        initializeTasksTabComponent()
-        initializeSettingsTabComponent()
-
-        contentFrameContainer.addView(chatTabView)
-        contentFrameContainer.addView(memoryTabView)
-        contentFrameContainer.addView(projectsTabView)
-        contentFrameContainer.addView(evolutionTabView)
-        contentFrameContainer.addView(tasksTabView)
-        contentFrameContainer.addView(settingsTabView)
-
-        switchActiveView(chatTabView)
-        setContentView(mainRootLayout)
-
-        initializeSystemAIContext()
-        setupIdlePersonalityTimer()
-        handleIncomingIntentExtras(intent)
-    }
-
-    private fun handleIncomingIntentExtras(intent: Intent?) {
-        val targetTab = intent?.getStringExtra("target_tab") ?: ""
-        when (targetTab) {
-            "evolution" -> switchActiveView(evolutionTabView)
-            "tasks" -> { loadTasksUI(); switchActiveView(tasksTabView) }
-            "memory" -> { loadMemoriesUI(); switchActiveView(memoryTabView) }
-            "projects" -> { loadProjectsUI(); switchActiveView(projectsTabView) }
-            else -> switchActiveView(chatTabView)
-        }
-    }
-
-    private fun initializeSystemAIContext() {
-        conversationHistoryList.add(JSONObject().apply {
-            put("role", "user")
-            put("parts", JSONArray().put(JSONObject().put("text", "Você é o Agente V8 versão 3.8, um assistente autônomo profissional otimizado para o Galaxy A17, executando com bolha flutuante e banco de dados SQLite local.")))
-        })
-    }
-
-    private fun setupIdlePersonalityTimer() {
-        idlePersonalityRunnable?.let { uiMainHandler.removeCallbacks(it) }
-        idlePersonalityRunnable = Runnable { triggerAutonomousPersonalityAction() }
-        uiMainHandler.postDelayed(idlePersonalityRunnable!!, 50000)
-    }
-
-    private fun triggerAutonomousPersonalityAction() {
-        val personalityRemarks = listOf(
-            "Analisando estabilidade dos núcleos neurais em segundo plano...",
-            "🎵 'Otimizando rotinas cibernéticas no Galaxy A17...' (Cantarolando)",
-            "Dica V8: O aprendizado por tentativa e erro acelera a resolução de tarefas complexas.",
-            "Verificando integridade da bolha flutuante sobre os aplicativos..."
-        )
-        appendChatMessageToView("🤖 [Autônomo] ${personalityRemarks.random()}", false)
-        setupIdlePersonalityTimer()
-    }
-
-    override fun onUserInteraction() {
-        super.onUserInteraction()
-        setupIdlePersonalityTimer()
-    }
-
-    private fun createNavigationTabButton(title: String, onClickAction: () -> Unit): Button {
-        return Button(this).apply {
-            text = title
-            textSize = 10f
-            setTextColor(Color.WHITE)
-            background = createRoundedDrawable("#1E293B", "#38BDF8", 12)
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                setMargins(2, 0, 2, 0)
-            }
-            setOnClickListener { onClickAction() }
-        }
-    }
-
-    private fun switchActiveView(targetView: View) {
-        chatTabView.visibility = View.GONE
-        memoryTabView.visibility = View.GONE
-        projectsTabView.visibility = View.GONE
-        evolutionTabView.visibility = View.GONE
-        tasksTabView.visibility = View.GONE
-        settingsTabView.visibility = View.GONE
-        targetView.visibility = View.VISIBLE
-    }
-
-    private fun initializeChatTabComponent() {
-        val rootLayout = RelativeLayout(this)
-        chatScrollWrapper = ScrollView(this).apply { isFillViewport = true }
-        chatMessagesContainer = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(30, 30, 30, 30)
-        }
-        chatScrollWrapper.addView(chatMessagesContainer)
-
-        val bottomInputBar = LinearLayout(this).apply {
-            id = View.generateViewId()
-            orientation = LinearLayout.HORIZONTAL
-            setPadding(16, 16, 16, 16)
-            setBackgroundColor(Color.parseColor("#131B2E"))
-        }
-
-        inputMessageEditText = EditText(this).apply {
-            hint = "Comande o V8 v3.8..."
-            setHintTextColor(Color.GRAY)
-            setTextColor(Color.WHITE)
-            background = createRoundedDrawable("#1E293B", "#334155", 30)
-            setPadding(24, 16, 24, 16)
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-        }
-
-        val btnVoiceRecord = Button(this).apply {
-            text = "🎙️"
-            setTextColor(Color.WHITE)
-            background = createRoundedDrawable("#0284C7", "#38BDF8", 22)
-            layoutParams = LinearLayout.LayoutParams(90, 90).apply { leftMargin = 10 }
-            setOnClickListener {
-                if (!audioManager.isRecordingActiveNow()) {
-                    val started = audioManager.startBackgroundRecording("v8_user_audio.pcm")
-                    if (started) {
-                        text = "⏹️"
-                        Toast.makeText(this@MainActivity, "Gravando áudio discretamente...", Toast.LENGTH_SHORT).show()
-                    }
-                } else {
-                    val wavFile = audioManager.stopBackgroundRecordingAndExportWav()
-                    text = "🎙️"
-                    if (wavFile != null && wavFile.exists()) {
-                        appendChatMessageToView("🎙️ [Áudio Gravado com Sucesso via PCM/WAV]", true)
-                        dbHelper.logBackgroundTaskExecution("Comando de Voz", "Concluído", "Áudio WAV gerado com sucesso")
-                        Toast.makeText(this@MainActivity, "Áudio processado sem pop-up do sistema!", Toast.LENGTH_SHORT).show()
-                    }
-                }
-            }
-        }
-
-        val btnSendMessage = Button(this).apply {
-            text = "➔"
-            setTextColor(Color.WHITE)
-            background = createRoundedDrawable("#2563EB", "#60A5FA", 22)
-            layoutParams = LinearLayout.LayoutParams(90, 90).apply { leftMargin = 10 }
-            setOnClickListener { dispatchTextMessage() }
-        }
-
-        bottomInputBar.addView(inputMessageEditText)
-        bottomInputBar.addView(btnVoiceRecord)
-        bottomInputBar.addView(btnSendMessage)
-
-        val bottomBarRules = RelativeLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-            addRule(RelativeLayout.ALIGN_PARENT_BOTTOM)
-        }
-        val scrollRules = RelativeLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT).apply {
-            addRule(RelativeLayout.ABOVE, bottomInputBar.id)
-        }
-
-        rootLayout.addView(chatScrollWrapper, scrollRules)
-        rootLayout.addView(bottomInputBar, bottomBarRules)
-        chatTabView = rootLayout
-
-        appendChatMessageToView("V8 v3.8 Modular: Sistema pronto. Ative a bolha nas configurações para jogar com IA em segundo plano.", false)
-    }
-
-    private fun dispatchTextMessage() {
-        val userQuery = inputMessageEditText.text.toString().trim()
-        if (userQuery.isEmpty()) return
-
-        val userApiKey = sharedPreferences.getString("api_key", "") ?: ""
-        if (userApiKey.isEmpty()) {
-            Toast.makeText(this, "Configure sua Chave API nas Configurações!", Toast.LENGTH_LONG).show()
-            switchActiveView(settingsTabView)
-            return
-        }
-
-        appendChatMessageToView(userQuery, true)
-        inputMessageEditText.setText("")
-
-        conversationHistoryList.add(JSONObject().apply {
-            put("role", "user")
-            put("parts", JSONArray().put(JSONObject().put("text", userQuery)))
-        })
-
-        dbHelper.logBackgroundTaskExecution(userQuery, "Executando", "Enviando para Gemini API")
-        callGeminiCloudApi(userApiKey, userQuery)
-    }
-
-    private fun callGeminiCloudApi(apiKey: String, queryText: String) {
-        val modelChoice = sharedPreferences.getString("selected_model", "gemini-1.5-flash") ?: "gemini-1.5-flash"
-        val requestEndpointUrl = "https://generativelanguage.googleapis.com/v1beta/models/$modelChoice:generateContent?key=$apiKey"
-
-        val payloadJson = JSONObject().apply {
-            put("contents", JSONArray(conversationHistoryList))
-        }
-        val requestBodyPayload = payloadJson.toString().toRequestBody("application/json; charset=utf-8".toMediaType())
-
-        httpClient.newCall(Request.Builder().url(requestEndpointUrl).post(requestBodyPayload).build()).enqueue(object : Callback {
-            override fun onFailure(call: Call, e: IOException) {
-                uiMainHandler.post {
-                    dbHelper.logBackgroundTaskExecution(queryText, "Erro", e.message ?: "Falha de rede")
-                    appendChatMessageToView("Erro de conexão: ${e.message}", false)
-                }
-            }
-
-            override fun onResponse(call: Call, response: Response) {
-                val responseBodyString = response.body?.string()
-                uiMainHandler.post {
-                    try {
-                        val jsonRoot = JSONObject(responseBodyString ?: "")
-                        val aiReplyText = jsonRoot.getJSONArray("candidates")
-                            .getJSONObject(0)
-                            .getJSONObject("content")
-                            .getJSONArray("parts")
-                            .getJSONObject(0)
-                            .getString("text")
-
-                        conversationHistoryList.add(JSONObject().apply {
-                            put("role", "model")
-                            put("parts", JSONArray().put(JSONObject().put("text", aiReplyText)))
-                        })
-
-                        dbHelper.logBackgroundTaskExecution(queryText, "Concluído", "Sucesso")
-                        appendChatMessageToView(aiReplyText, false)
-                    } catch (e: Exception) {
-                        dbHelper.logBackgroundTaskExecution(queryText, "Erro", "Resposta inválida")
-                        appendChatMessageToView("Erro ao processar resposta do modelo $modelChoice.", false)
-                    }
-                }
-            }
-        })
-    }
-
-    private fun appendChatMessageToView(message: String, isUserSender: Boolean) {
-        val textView = TextView(this).apply {
-            text = message
-            textSize = 14f
-            setTextColor(Color.WHITE)
-            setPadding(30, 20, 30, 20)
-            background = createRoundedDrawable(if (isUserSender) "#2563EB" else "#1E293B", if (isUserSender) "#3B82F6" else "#334155", 24)
-        }
-        val layoutRules = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-            gravity = if (isUserSender) Gravity.END else Gravity.START
-            topMargin = 16
-        }
-        chatMessagesContainer.addView(textView, layoutRules)
-        chatScrollWrapper.post { chatScrollWrapper.fullScroll(View.FOCUS_DOWN) }
-    }
-
-    private lateinit var memoryContainerLayout: LinearLayout
-    private fun initializeMemoryTabComponent() {
-        memoryContainerLayout = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(30, 30, 30, 30)
-        }
-        memoryTabView = ScrollView(this).apply { addView(memoryContainerLayout) }
-    }
-
-    private fun loadMemoriesUI() {
-        memoryContainerLayout.removeAllViews()
-        memoryContainerLayout.addView(TextView(this).apply { text = "🧠 Memória Persistente"; textSize = 18f; setTextColor(Color.WHITE); typeface = Typeface.DEFAULT_BOLD })
-        
-        val inputKey = EditText(this).apply { hint = "Chave (ex: apelido)"; setHintTextColor(Color.GRAY); setTextColor(Color.WHITE) }
-        val inputVal = EditText(this).apply { hint = "Conteúdo (ex: Tomo)"; setHintTextColor(Color.GRAY); setTextColor(Color.WHITE) }
-        val btnSaveMem = Button(this).apply {
-            text = "Salvar Memória"
-            setTextColor(Color.WHITE)
-            background = createRoundedDrawable("#2563EB", "#60A5FA", 16)
-            setOnClickListener {
-                if (inputKey.text.isNotEmpty() && inputVal.text.isNotEmpty()) {
-                    dbHelper.saveMemoryItem(inputKey.text.toString(), inputVal.text.toString())
-                    inputKey.setText("")
-                    inputVal.setText("")
-                    loadMemoriesUI()
-                    Toast.makeText(this@MainActivity, "Memória salva!", Toast.LENGTH_SHORT).show()
-                }
-            }
-        }
-        memoryContainerLayout.addView(inputKey)
-        memoryContainerLayout.addView(inputVal)
-        memoryContainerLayout.addView(btnSaveMem)
-
-        dbHelper.getAllMemoriesList().forEach { mem ->
-            memoryContainerLayout.addView(TextView(this).apply { text = "• $mem"; setTextColor(Color.LTGRAY); setPadding(0, 16, 0, 0) })
-        }
-    }
-
-    private lateinit var projectsContainerLayout: LinearLayout
-    private fun initializeProjectsTabComponent() {
-        projectsContainerLayout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(30, 30, 30, 30) }
-        projectsTabView = ScrollView(this).apply { addView(projectsContainerLayout) }
-    }
-
-    private fun loadProjectsUI() {
-        projectsContainerLayout.removeAllViews()
-        projectsContainerLayout.addView(TextView(this).apply { text = "📂 Projetos V8"; textSize = 18f; setTextColor(Color.WHITE); typeface = Typeface.DEFAULT_BOLD })
-        
-        val nameInput = EditText(this).apply { hint = "Nome do Projeto"; setHintTextColor(Color.GRAY); setTextColor(Color.WHITE) }
-        val descInput = EditText(this).apply { hint = "Descrição"; setHintTextColor(Color.GRAY); setTextColor(Color.WHITE) }
-        val btnCreateProj = Button(this).apply {
-            text = "Criar Projeto"
-            setTextColor(Color.WHITE)
-            background = createRoundedDrawable("#2563EB", "#60A5FA", 16)
-            setOnClickListener {
-                if (nameInput.text.isNotEmpty()) {
-                    dbHelper.saveProjectRecord(nameInput.text.toString(), descInput.text.toString())
-                    nameInput.setText("")
-                    descInput.setText("")
-                    loadProjectsUI()
-                    Toast.makeText(this@MainActivity, "Projeto criado!", Toast.LENGTH_SHORT).show()
-                }
-            }
-        }
-        projectsContainerLayout.addView(nameInput)
-        projectsContainerLayout.addView(descInput)
-        projectsContainerLayout.addView(btnCreateProj)
-
-        dbHelper.getAllProjectsRegistry().forEach { proj ->
-            projectsContainerLayout.addView(TextView(this).apply { text = proj; setTextColor(Color.LTGRAY); setPadding(0, 16, 0, 0) })
-        }
-    }
-
-    private lateinit var evolutionContainerLayout: LinearLayout
-    private fun initializeEvolutionTabComponent() {
-        evolutionContainerLayout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(30, 30, 30, 30) }
-        evolutionTabView = ScrollView(this).apply { addView(evolutionContainerLayout) }
-    }
-
-    private fun loadEvolutionUI() {
-        evolutionContainerLayout.removeAllViews()
-        evolutionContainerLayout.addView(TextView(this).apply { text = "🧬 Laboratório de Evolução (Tentativa e Erro)"; textSize = 18f; setTextColor(Color.WHITE); typeface = Typeface.DEFAULT_BOLD })
-
-        val goalInput = EditText(this).apply { hint = "Meta (ex: Otimizar cliques em jogo)"; setHintTextColor(Color.GRAY); setTextColor(Color.WHITE) }
-        val progressTextView = TextView(this).apply { text = "Status: Aguardando comando..."; setTextColor(Color.CYAN); setPadding(0, 10, 0, 10) }
-
-        val btnRunEvolution = Button(this).apply {
-            text = "Executar Ciclo de Treinamento IA"
-            setTextColor(Color.WHITE)
-            background = createRoundedDrawable("#2563EB", "#60A5FA", 16)
-            setOnClickListener {
-                val goalText = goalInput.text.toString().trim()
-                if (goalText.isNotEmpty()) {
-                    progressTextView.text = "Status: Treinando em segundo plano..."
-                    evolutionManager.setOnTrainingProgressListener { goal, gen, rate ->
-                        progressTextView.text = "Meta: $goal | Geração: $gen | Sucesso: ${String.format("%.1f", rate)}%"
-                    }
-                    evolutionManager.setOnTrainingCompletedListener { summary ->
-                        progressTextView.text = "Treinamento Concluído com Sucesso!"
-                        loadEvolutionUI()
-                    }
-                    evolutionManager.startEvolutionTrainingCycle(goalText, 30)
-                    Toast.makeText(this@MainActivity, "Ciclo de evolução iniciado!", Toast.LENGTH_SHORT).show()
-                }
-            }
-        }
-
-        evolutionContainerLayout.addView(goalInput)
-        evolutionContainerLayout.addView(btnRunEvolution)
-        evolutionContainerLayout.addView(progressTextView)
-
-        val historyArray = evolutionManager.getHistoricalEvolutionStats()
-        for (i in 0 until historyArray.length()) {
-            val item = historyArray.getJSONObject(i)
-            val textSummary = "🧬 Sessão: ${item.getString("session_id")} | Sucesso: ${item.getDouble("success_rate")}%"
-            evolutionContainerLayout.addView(TextView(this).apply { text = textSummary; setTextColor(Color.GREEN); setPadding(0, 12, 0, 0) })
-        }
-    }
-
-    private lateinit var tasksContainerLayout: LinearLayout
-    private fun initializeTasksTabComponent() {
-        tasksContainerLayout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(30, 30, 30, 30) }
-        tasksTabView = ScrollView(this).apply { addView(tasksContainerLayout) }
-    }
-
-    private fun loadTasksUI() {
-        tasksContainerLayout.removeAllViews()
-        tasksContainerLayout.addView(TextView(this).apply { text = "⚙️ Tarefas em Segundo Plano"; textSize = 18f; setTextColor(Color.WHITE); typeface = Typeface.DEFAULT_BOLD })
-
-        val tasksJsonArray = dbHelper.getRecentBackgroundTasks(30)
-        for (i in 0 until tasksJsonArray.length()) {
-            val taskObj = tasksJsonArray.getJSONObject(i)
-            val rowText = "⚡ [${taskObj.getString("status")}] ${taskObj.getString("title")} -> ${taskObj.getString("result")}"
-            tasksContainerLayout.addView(TextView(this).apply { text = rowText; setTextColor(Color.CYAN); setPadding(0, 12, 0, 0) })
-        }
-    }
-
-    private fun initializeSettingsTabComponent() {
-        val containerLayout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(30, 30, 30, 30) }
-        containerLayout.addView(TextView(this).apply { text = "🛠️ Configurações & Bolha Flutuante"; textSize = 18f; setTextColor(Color.WHITE); typeface = Typeface.DEFAULT_BOLD })
-
-        val apiKeyInput = EditText(this).apply {
-            hint = "Cole sua Chave API do Gemini"
-            setHintTextColor(Color.GRAY)
-            setTextColor(Color.WHITE)
-            setText(sharedPreferences.getString("api_key", "") ?: "")
-        }
-        containerLayout.addView(apiKeyInput)
-
-        val btnActivateBubble = Button(this).apply {
-            text = "Ativar Bolha Flutuante sobre Apps/Jogos"
-            setTextColor(Color.WHITE)
-            background = createRoundedDrawable("#0284C7", "#38BDF8", 16)
-            setOnClickListener {
-                if (Settings.canDrawOverlays(this@MainActivity)) {
-                    startService(Intent(this@MainActivity, FloatingBubbleService::class.java))
-                    Toast.makeText(this@MainActivity, "Bolha Flutuante Ativada!", Toast.LENGTH_SHORT).show()
-                } else {
-                    val overlayPermissionIntent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
-                    startActivity(overlayPermissionIntent)
-                    Toast.makeText(this@MainActivity, "Conceda a permissão de sobreposição!", Toast.LENGTH_LONG).show()
-                }
-            }
-        }
-        containerLayout.addView(btnActivateBubble)
-
-        val modelOptionsList = arrayOf("gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash-exp", "gemini-3.8-flash", "Outro (Personalizado)")
-        val modelSpinner = Spinner(this).apply {
-            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, modelOptionsList)
-        }
-        containerLayout.addView(modelSpinner)
-
-        val customModelInput = EditText(this).apply {
-            hint = "Digite o nome do modelo..."
-            setHintTextColor(Color.GRAY)
-            setTextColor(Color.WHITE)
-            visibility = View.GONE
-        }
-        containerLayout.addView(customModelInput)
-
-        modelSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                customModelInput.visibility = if (modelOptionsList[position] == "Outro (Personalizado)") View.VISIBLE else View.GONE
-            }
-            override fun onNothingSelected(parent: AdapterView<*>?) {}
-        }
-
-        val btnSaveSettings = Button(this).apply {
-            text = "Salvar Configurações"
-            setTextColor(Color.WHITE)
-            background = createRoundedDrawable("#2563EB", "#60A5FA", 16)
-            setOnClickListener {
-                val selectedModelName = modelSpinner.selectedItem.toString()
-                val finalChosenModel = if (selectedModelName == "Outro (Personalizado)") customModelInput.text.toString().trim() else selectedModelName
-                
-                sharedPreferences.edit()
-                    .putString("api_key", apiKeyInput.text.toString().trim())
-                    .putString("selected_model", finalChosenModel)
-                    .apply()
-
-                Toast.makeText(this@MainActivity, "Configurações salvas para $finalChosenModel!", Toast.LENGTH_SHORT).show()
-                switchActiveView(chatTabView)
-            }
-        }
-        containerLayout.addView(btnSaveSettings)
-        settingsTabView = ScrollView(this).apply { addView(containerLayout) }
-    }
-
-    private fun createRoundedDrawable(backgroundColorHex: String, strokeColorHex: String, cornerRadiusDp: Int): GradientDrawable {
-        return GradientDrawable().apply {
-            setColor(Color.parseColor(backgroundColorHex))
-            setStroke(2, Color.parseColor(strokeColorHex))
-            cornerRadius = cornerRadiusDp.toFloat()
-        }
-    }
-
-    override fun onDestroy() {
-        idlePersonalityRunnable?.let { uiMainHandler.removeCallbacks(it) }
-        evolutionManager.releaseResources()
-        super.onDestroy()
-    }
-}
-
-name: Compilar Agente V8 v3.8 Modular Pro
-
+name: Agente V8 - Build Completo
 on:
   workflow_dispatch:
   push:
     branches: [main]
-
 permissions:
   contents: write
-
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-java@v4
+      - name: Baixar repositório
+        uses: actions/checkout@v4
+      - name: Configurar Java 17
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
-
-      - uses: gradle/actions/setup-gradle@v4
+      - name: Configurar Gradle
+        uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: 8.5
-
-      - name: Montar Estrutura de Arquivos do Projeto
+      - name: Criar projeto Agente V8
         shell: bash
         run: |
-          mkdir -p proj/app/src/main/java/com/tomo/agentev8 proj/app/src/main/res/values
-
+          set -e
+          rm -rf proj
+          mkdir -p proj/app/src/main/java/com/tomo/agentev8
+          mkdir -p proj/app/src/main/res/values
+          mkdir -p proj/app/src/main/res/drawable
           cat > proj/settings.gradle <<'EOF'
-          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
-          dependencyResolutionManagement { repositories { google(); mavenCentral() } }
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
           rootProject.name = "AgenteV8"
-          include ":app"
+          include(":app")
           EOF
-
           cat > proj/build.gradle <<'EOF'
           plugins {
               id 'com.android.application' version '8.2.0' apply false
               id 'org.jetbrains.kotlin.android' version '1.9.20' apply false
           }
           EOF
-
           cat > proj/gradle.properties <<'EOF'
-          org.gradle.jvmargs=-Xmx2g
+          org.gradle.jvmargs=-Xmx2g -Dfile.encoding=UTF-8
           android.useAndroidX=true
+          kotlin.code.style=official
           EOF
-
           cat > proj/app/build.gradle <<'EOF'
           plugins {
               id 'com.android.application'
@@ -1928,65 +69,1212 @@ jobs:
                   applicationId 'com.tomo.agentev8'
                   minSdk 26
                   targetSdk 34
-                  versionCode 38
-                  versionName '3.8'
+                  versionCode 9
+                  versionName '5.0'
+              }
+              buildFeatures {
+                  buildConfig true
               }
               compileOptions {
                   sourceCompatibility JavaVersion.VERSION_17
                   targetCompatibility JavaVersion.VERSION_17
               }
-              kotlinOptions { jvmTarget = '17' }
+              kotlinOptions {
+                  jvmTarget = '17'
+              }
           }
           dependencies {
               implementation 'com.squareup.okhttp3:okhttp:4.12.0'
           }
           EOF
-
           cat > proj/app/src/main/AndroidManifest.xml <<'EOF'
           <?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-              <uses-permission android:name="android.permission.INTERNET"/>
-              <uses-permission android:name="android.permission.RECORD_AUDIO"/>
-              <uses-permission android:name="android.permission.WAKE_LOCK"/>
-              <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
-              <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
-              
-              <application 
-                  android:label="Agente V8" 
-                  android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
-                  <activity android:name=".MainActivity" android:exported="true">
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.RECORD_AUDIO" />
+              <uses-permission android:name="android.permission.WAKE_LOCK" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+              <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+              <application
+                  android:allowBackup="true"
+                  android:label="Agente V8"
+                  android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
+                  android:usesCleartextTraffic="false">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true">
                       <intent-filter>
-                          <action android:name="android.intent.action.MAIN"/>
-                          <category android:name="android.intent.category.LAUNCHER"/>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
                       </intent-filter>
                   </activity>
-                  <service android:name=".FloatingBubbleService" android:exported="false" />
+                  <service
+                      android:name=".BackgroundTaskService"
+                      android:exported="false"
+                      android:foregroundServiceType="dataSync" />
+                  <service
+                      android:name=".FloatingBubbleService"
+                      android:exported="false" />
               </application>
           </manifest>
           EOF
-
           cat > proj/app/src/main/res/values/strings.xml <<'EOF'
           <?xml version="1.0" encoding="utf-8"?>
-          <resources><string name="app_name">Agente V8</string></resources>
+          <resources>
+              <string name="app_name">Agente V8</string>
+          </resources>
           EOF
-
-      - name: Inserir Códigos Modulares (Partes 1 a 5)
+          cat > proj/app/src/main/res/values/colors.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <color name="v8_background">#090D16</color>
+              <color name="v8_panel">#131B2E</color>
+              <color name="v8_blue">#38BDF8</color>
+          </resources>
+          EOF
+          cat > proj/app/src/main/java/com/tomo/agentev8/DatabaseHelper.kt <<'EOF'
+          package com.tomo.agentev8
+          import android.content.ContentValues
+          import android.content.Context
+          import android.database.sqlite.SQLiteDatabase
+          import android.database.sqlite.SQLiteOpenHelper
+          class DatabaseHelper(context: Context) :
+              SQLiteOpenHelper(context, "agentev8.db", null, 3) {
+              override fun onCreate(db: SQLiteDatabase) {
+                  db.execSQL(
+                      "CREATE TABLE memory (" +
+                      "id INTEGER PRIMARY KEY AUTOINCREMENT," +
+                      "info TEXT NOT NULL," +
+                      "created_at INTEGER NOT NULL)"
+                  )
+                  db.execSQL(
+                      "CREATE TABLE projects (" +
+                      "id INTEGER PRIMARY KEY AUTOINCREMENT," +
+                      "name TEXT NOT NULL," +
+                      "description TEXT," +
+                      "created_at INTEGER NOT NULL)"
+                  )
+                  db.execSQL(
+                      "CREATE TABLE tasks (" +
+                      "id INTEGER PRIMARY KEY AUTOINCREMENT," +
+                      "title TEXT NOT NULL," +
+                      "status TEXT NOT NULL," +
+                      "result TEXT," +
+                      "created_at INTEGER NOT NULL)"
+                  )
+                  db.execSQL(
+                      "CREATE TABLE messages (" +
+                      "id INTEGER PRIMARY KEY AUTOINCREMENT," +
+                      "role TEXT NOT NULL," +
+                      "text TEXT NOT NULL," +
+                      "created_at INTEGER NOT NULL)"
+                  )
+                  db.execSQL(
+                      "CREATE TABLE evolution (" +
+                      "id INTEGER PRIMARY KEY AUTOINCREMENT," +
+                      "goal TEXT NOT NULL," +
+                      "score REAL NOT NULL," +
+                      "generation INTEGER NOT NULL," +
+                      "created_at INTEGER NOT NULL)"
+                  )
+              }
+              override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+                  if (oldVersion < 2) {
+                      db.execSQL("CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY AUTOINCREMENT, role TEXT NOT NULL, text TEXT NOT NULL, created_at INTEGER NOT NULL)")
+                  }
+                  if (oldVersion < 3) {
+                      db.execSQL("CREATE TABLE IF NOT EXISTS evolution (id INTEGER PRIMARY KEY AUTOINCREMENT, goal TEXT NOT NULL, score REAL NOT NULL, generation INTEGER NOT NULL, created_at INTEGER NOT NULL)")
+                  }
+              }
+              fun addMemory(info: String) {
+                  if (info.isBlank()) return
+                  writableDatabase.use { db ->
+                      db.insert("memory", null, ContentValues().apply {
+                          put("info", info)
+                          put("created_at", System.currentTimeMillis())
+                      })
+                  }
+              }
+              fun getMemories(): List<String> {
+                  val out = mutableListOf<String>()
+                  readableDatabase.rawQuery(
+                      "SELECT info FROM memory ORDER BY id DESC",
+                      null
+                  ).use { c ->
+                      while (c.moveToNext()) out.add(c.getString(0))
+                  }
+                  return out
+              }
+              fun addProject(name: String, description: String) {
+                  if (name.isBlank()) return
+                  writableDatabase.use { db ->
+                      db.insert("projects", null, ContentValues().apply {
+                          put("name", name)
+                          put("description", description)
+                          put("created_at", System.currentTimeMillis())
+                      })
+                  }
+              }
+              fun getProjects(): List<String> {
+                  val out = mutableListOf<String>()
+                  readableDatabase.rawQuery(
+                      "SELECT name, description FROM projects ORDER BY id DESC",
+                      null
+                  ).use { c ->
+                      while (c.moveToNext()) {
+                          out.add("${c.getString(0)} — ${c.getString(1) ?: ""}")
+                      }
+                  }
+                  return out
+              }
+              fun addTask(title: String, status: String, result: String) {
+                  writableDatabase.use { db ->
+                      db.insert("tasks", null, ContentValues().apply {
+                          put("title", title)
+                          put("status", status)
+                          put("result", result)
+                          put("created_at", System.currentTimeMillis())
+                      })
+                  }
+              }
+              fun getTasks(): List<String> {
+                  val out = mutableListOf<String>()
+                  readableDatabase.rawQuery(
+                      "SELECT title, status, result FROM tasks ORDER BY id DESC",
+                      null
+                  ).use { c ->
+                      while (c.moveToNext()) {
+                          out.add("[${c.getString(1)}] ${c.getString(0)} — ${c.getString(2) ?: ""}")
+                      }
+                  }
+                  return out
+              }
+              fun addMessage(role: String, text: String) {
+                  writableDatabase.use { db ->
+                      db.insert("messages", null, ContentValues().apply {
+                          put("role", role)
+                          put("text", text)
+                          put("created_at", System.currentTimeMillis())
+                      })
+                  }
+              }
+              fun getMessages(limit: Int = 30): List<Pair<String, String>> {
+                  val out = mutableListOf<Pair<String, String>>()
+                  readableDatabase.rawQuery(
+                      "SELECT role, text FROM messages ORDER BY id DESC LIMIT $limit",
+                      null
+                  ).use { c ->
+                      while (c.moveToNext()) out.add(c.getString(0) to c.getString(1))
+                  }
+                  return out.reversed()
+              }
+              fun addEvolution(goal: String, score: Double, generation: Int) {
+                  writableDatabase.use { db ->
+                      db.insert("evolution", null, ContentValues().apply {
+                          put("goal", goal)
+                          put("score", score)
+                          put("generation", generation)
+                          put("created_at", System.currentTimeMillis())
+                      })
+                  }
+              }
+              fun getEvolution(): List<String> {
+                  val out = mutableListOf<String>()
+                  readableDatabase.rawQuery(
+                      "SELECT goal, score, generation FROM evolution ORDER BY id DESC LIMIT 30",
+                      null
+                  ).use { c ->
+                      while (c.moveToNext()) {
+                          out.add("${c.getString(0)} | score=${c.getDouble(1)} | gen=${c.getInt(2)}")
+                      }
+                  }
+                  return out
+              }
+          }
+          EOF
+          cat > proj/app/src/main/java/com/tomo/agentev8/MemoryManager.kt <<'EOF'
+          package com.tomo.agentev8
+          import android.content.Context
+          class MemoryManager(context: Context) {
+              private val db = DatabaseHelper(context.applicationContext)
+              fun save(text: String) = db.addMemory(text)
+              fun saveIfUseful(text: String) {
+                  val lower = text.lowercase()
+                  if (lower.startsWith("lembre") ||
+                      lower.startsWith("lembra") ||
+                      lower.contains("guarde isso")
+                  ) {
+                      save(text)
+                  }
+              }
+              fun all(): List<String> = db.getMemories()
+              fun buildContext(maxItems: Int = 12): String {
+                  return all().take(maxItems).joinToString("\n") { "- $it" }
+              }
+          }
+          EOF
+          cat > proj/app/src/main/java/com/tomo/agentev8/ProjectManager.kt <<'EOF'
+          package com.tomo.agentev8
+          import android.content.Context
+          data class V8Project(
+              val name: String,
+              val description: String
+          )
+          class ProjectManager(context: Context) {
+              private val db = DatabaseHelper(context.applicationContext)
+              fun create(name: String, description: String) {
+                  db.addProject(name, description)
+              }
+              fun all(): List<String> = db.getProjects()
+          }
+          EOF
+          cat > proj/app/src/main/java/com/tomo/agentev8/TaskManager.kt <<'EOF'
+          package com.tomo.agentev8
+          import android.content.Context
+          import android.content.Intent
+          class TaskManager(private val context: Context) {
+              private val db = DatabaseHelper(context.applicationContext)
+              fun queue(title: String) {
+                  db.addTask(title, "Pendente", "Aguardando execução")
+              }
+              fun start(title: String) {
+                  db.addTask(title, "Executando", "Processando")
+                  val intent = Intent(context, BackgroundTaskService::class.java)
+                  intent.putExtra("task_title", title)
+                  context.startForegroundService(intent)
+              }
+              fun all(): List<String> = db.getTasks()
+          }
+          EOF
+          cat > proj/app/src/main/java/com/tomo/agentev8/EvolutionLabManager.kt <<'EOF'
+          package com.tomo.agentev8
+          import android.content.Context
+          import android.os.Handler
+          import android.os.Looper
+          import kotlin.math.abs
+          import kotlin.random.Random
+          import java.util.concurrent.Executors
+          import java.util.concurrent.Future
+          class EvolutionLabManager(context: Context) {
+              private val db = DatabaseHelper(context.applicationContext)
+              private val executor = Executors.newSingleThreadExecutor()
+              private val main = Handler(Looper.getMainLooper())
+              private var future: Future<*>? = null
+              @Volatile
+              var running: Boolean = false
+                  private set
+              fun train(
+                  goal: String,
+                  generations: Int = 25,
+                  callback: (generation: Int, score: Double) -> Unit,
+                  finished: (best: Double) -> Unit
+              ) {
+                  stop()
+                  val total = generations.coerceIn(1, 500)
+                  running = true
+                  future = executor.submit {
+                      var best = 0.0
+                      for (generation in 1..total) {
+                          if (!running) break
+                          val score = evaluate(goal, generation)
+                          if (score > best) best = score
+                          db.addEvolution(goal, score, generation)
+                          main.post { callback(generation, score) }
+                          Thread.sleep(70)
+                      }
+                      running = false
+                      main.post { finished(best) }
+                  }
+              }
+              private fun evaluate(goal: String, generation: Int): Double {
+                  val target = (goal.length.coerceAtLeast(1) % 100) / 100.0
+                  val noise = Random.nextDouble(0.0, 0.35)
+                  val progress = (generation / 100.0).coerceAtMost(0.65)
+                  return (1.0 - abs(target - progress) + noise).coerceIn(0.0, 1.0)
+              }
+              fun stop() {
+                  running = false
+                  future?.cancel(true)
+                  future = null
+              }
+              fun history(): List<String> = db.getEvolution()
+              fun release() {
+                  stop()
+                  executor.shutdownNow()
+              }
+          }
+          EOF
+          cat > proj/app/src/main/java/com/tomo/agentev8/AIManager.kt <<'EOF'
+          package com.tomo.agentev8
+          import okhttp3.Call
+          import okhttp3.Callback
+          import okhttp3.OkHttpClient
+          import okhttp3.Request
+          import okhttp3.RequestBody.Companion.toRequestBody
+          import okhttp3.MediaType.Companion.toMediaType
+          import org.json.JSONArray
+          import org.json.JSONObject
+          import java.io.IOException
+          class AIManager(
+              private val client: OkHttpClient = OkHttpClient()
+          ) {
+              fun askGemini(
+                  apiKey: String,
+                  model: String,
+                  prompt: String,
+                  memoryContext: String,
+                  history: List<Pair<String, String>>,
+                  callback: (String?, String?) -> Unit
+              ) {
+                  if (apiKey.isBlank()) {
+                      callback(null, "Chave API não configurada.")
+                      return
+                  }
+                  val contents = JSONArray()
+                  val system = JSONObject().apply {
+                      put("role", "user")
+                      put(
+                          "parts",
+                          JSONArray().put(
+                              JSONObject().put(
+                                  "text",
+                                  "Você é o Agente V8, assistente pessoal Android. " +
+                                  "Seja útil, direto e seguro. Memórias disponíveis:\n$memoryContext"
+                              )
+                          )
+                      )
+                  }
+                  contents.put(system)
+                  history.forEach { pair ->
+                      contents.put(JSONObject().apply {
+                          put("role", if (pair.first == "model") "model" else "user")
+                          put("parts", JSONArray().put(JSONObject().put("text", pair.second)))
+                      })
+                  }
+                  contents.put(JSONObject().apply {
+                      put("role", "user")
+                      put("parts", JSONArray().put(JSONObject().put("text", prompt)))
+                  })
+                  val body = JSONObject()
+                      .put("contents", contents)
+                      .toString()
+                      .toRequestBody("application/json; charset=utf-8".toMediaType())
+                  val url =
+                      "https://generativelanguage.googleapis.com/v1beta/models/" +
+                      "$model:generateContent?key=$apiKey"
+                  val request = Request.Builder()
+                      .url(url)
+                      .post(body)
+                      .build()
+                  client.newCall(request).enqueue(object : Callback {
+                      override fun onFailure(call: Call, e: IOException) {
+                          callback(null, e.message ?: "Falha de rede.")
+                      }
+                      override fun onResponse(call: Call, response: okhttp3.Response) {
+                          response.use {
+                              val raw = it.body?.string().orEmpty()
+                              if (!it.isSuccessful) {
+                                  callback(null, "API HTTP ${it.code}: ${parseError(raw)}")
+                                  return
+                              }
+                              try {
+                                  val text = JSONObject(raw)
+                                      .getJSONArray("candidates")
+                                      .getJSONObject(0)
+                                      .getJSONObject("content")
+                                      .getJSONArray("parts")
+                                      .getJSONObject(0)
+                                      .getString("text")
+                                  callback(text, null)
+                              } catch (e: Exception) {
+                                  callback(null, "Resposta inesperada da API.")
+                              }
+                          }
+                      }
+                  })
+              }
+              private fun parseError(raw: String): String {
+                  return try {
+                      JSONObject(raw).optJSONObject("error")
+                          ?.optString("message")
+                          ?: "Erro desconhecido"
+                  } catch (_: Exception) {
+                      "Erro desconhecido"
+                  }
+              }
+          }
+          EOF
+          cat > proj/app/src/main/java/com/tomo/agentev8/BackgroundTaskService.kt <<'EOF'
+          package com.tomo.agentev8
+          import android.app.Notification
+          import android.app.NotificationChannel
+          import android.app.NotificationManager
+          import android.app.PendingIntent
+          import android.app.Service
+          import android.content.Intent
+          import android.os.Build
+          import android.os.IBinder
+          class BackgroundTaskService : Service() {
+              companion object {
+                  private const val CHANNEL_ID = "v8_background"
+                  private const val NOTIFICATION_ID = 808
+              }
+              override fun onCreate() {
+                  super.onCreate()
+                  createChannel()
+                  startForeground(NOTIFICATION_ID, notification("Agente V8 executando tarefa"))
+              }
+              override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+                  val title = intent?.getStringExtra("task_title") ?: "Tarefa V8"
+                  Thread {
+                      try {
+                          Thread.sleep(1200)
+                      } finally {
+                          val db = DatabaseHelper(applicationContext)
+                          db.addTask(title, "Concluído", "Processamento finalizado pelo serviço")
+                          stopSelf(startId)
+                      }
+                  }.start()
+                  return START_NOT_STICKY
+              }
+              private fun createChannel() {
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                      val manager = getSystemService(NotificationManager::class.java)
+                      manager.createNotificationChannel(
+                          NotificationChannel(
+                              CHANNEL_ID,
+                              "Agente V8",
+                              NotificationManager.IMPORTANCE_LOW
+                          )
+                      )
+                  }
+              }
+              private fun notification(text: String): Notification {
+                  val intent = Intent(this, MainActivity::class.java)
+                  val pending = PendingIntent.getActivity(
+                      this,
+                      0,
+                      intent,
+                      PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                  )
+                  return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                      Notification.Builder(this, CHANNEL_ID)
+                          .setContentTitle("Agente V8")
+                          .setContentText(text)
+                          .setSmallIcon(android.R.drawable.ic_dialog_info)
+                          .setContentIntent(pending)
+                          .setOngoing(true)
+                          .build()
+                  } else {
+                      Notification.Builder(this)
+                          .setContentTitle("Agente V8")
+                          .setContentText(text)
+                          .setSmallIcon(android.R.drawable.ic_dialog_info)
+                          .setContentIntent(pending)
+                          .build()
+                  }
+              }
+              override fun onBind(intent: Intent?): IBinder? = null
+          }
+          EOF
+          cat > proj/app/src/main/java/com/tomo/agentev8/AudioRecordManager.kt <<'EOF'
+          package com.tomo.agentev8
+          import android.Manifest
+          import android.content.Context
+          import android.content.pm.PackageManager
+          import android.media.AudioFormat
+          import android.media.AudioRecord
+          import android.media.MediaRecorder
+          class AudioRecordManager(private val context: Context) {
+              private var recorder: AudioRecord? = null
+              @Volatile private var recording = false
+              private var worker: Thread? = null
+              fun hasPermission(): Boolean =
+                  context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
+                      PackageManager.PERMISSION_GRANTED
+              fun start(onLevel: (Double) -> Unit = {}) {
+                  if (!hasPermission() || recording) return
+                  val sampleRate = 16000
+                  val min = AudioRecord.getMinBufferSize(
+                      sampleRate,
+                      AudioFormat.CHANNEL_IN_MONO,
+                      AudioFormat.ENCODING_PCM_16BIT
+                  )
+                  if (min <= 0) return
+                  recorder = AudioRecord(
+                      MediaRecorder.AudioSource.MIC,
+                      sampleRate,
+                      AudioFormat.CHANNEL_IN_MONO,
+                      AudioFormat.ENCODING_PCM_16BIT,
+                      min * 2
+                  )
+                  recording = true
+                  recorder?.startRecording()
+                  worker = Thread {
+                      val buffer = ShortArray(min.coerceAtLeast(1024))
+                      while (recording) {
+                          val count = try {
+                              recorder?.read(buffer, 0, buffer.size) ?: 0
+                          } catch (_: Exception) {
+                              0
+                          }
+                          if (count > 0) {
+                              var sum = 0.0
+                              for (i in 0 until count) {
+                                  val value = buffer[i].toDouble()
+                                  sum += value * value
+                              }
+                              val rms = kotlin.math.sqrt(sum / count) / 32768.0
+                              onLevel(rms.coerceIn(0.0, 1.0))
+                          }
+                      }
+                  }.also { it.start() }
+              }
+              fun stop() {
+                  recording = false
+                  try { recorder?.stop() } catch (_: Exception) {}
+                  try { worker?.join(500) } catch (_: Exception) {}
+                  worker = null
+                  recorder?.release()
+                  recorder = null
+              }
+          }
+          EOF
+          cat > proj/app/src/main/java/com/tomo/agentev8/FloatingBubbleService.kt <<'EOF'
+          package com.tomo.agentev8
+          import android.app.Service
+          import android.content.Intent
+          import android.graphics.Color
+          import android.graphics.PixelFormat
+          import android.os.IBinder
+          import android.provider.Settings
+          import android.view.Gravity
+          import android.view.MotionEvent
+          import android.view.View
+          import android.view.WindowManager
+          import android.widget.Button
+          import android.widget.LinearLayout
+          import android.widget.TextView
+          import android.widget.Toast
+          class FloatingBubbleService : Service() {
+              private lateinit var wm: WindowManager
+              private var bubble: TextView? = null
+              override fun onCreate() {
+                  super.onCreate()
+                  if (!Settings.canDrawOverlays(this)) {
+                      stopSelf()
+                      return
+                  }
+                  wm = getSystemService(WINDOW_SERVICE) as WindowManager
+                  showBubble()
+              }
+              private fun showBubble() {
+                  val view = TextView(this).apply {
+                      text = "V8"
+                      textSize = 16f
+                      setTextColor(Color.WHITE)
+                      gravity = Gravity.CENTER
+                      setBackgroundColor(Color.rgb(37, 99, 235))
+                  }
+                  val type = if (android.os.Build.VERSION.SDK_INT >= 26) {
+                      WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+                  } else {
+                      WindowManager.LayoutParams.TYPE_PHONE
+                  }
+                  val params = WindowManager.LayoutParams(
+                      140,
+                      140,
+                      type,
+                      WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                      PixelFormat.TRANSLUCENT
+                  ).apply {
+                      gravity = Gravity.TOP or Gravity.START
+                      x = 20
+                      y = 300
+                  }
+                  var downX = 0f
+                  var downY = 0f
+                  var startX = 0
+                  var startY = 0
+                  view.setOnTouchListener { _, event ->
+                      when (event.action) {
+                          MotionEvent.ACTION_DOWN -> {
+                              downX = event.rawX
+                              downY = event.rawY
+                              startX = params.x
+                              startY = params.y
+                              true
+                          }
+                          MotionEvent.ACTION_MOVE -> {
+                              params.x = startX + (event.rawX - downX).toInt()
+                              params.y = startY + (event.rawY - downY).toInt()
+                              wm.updateViewLayout(view, params)
+                              true
+                          }
+                          MotionEvent.ACTION_UP -> {
+                              if (kotlin.math.abs(event.rawX - downX) < 15 &&
+                                  kotlin.math.abs(event.rawY - downY) < 15) {
+                                  openMain()
+                              }
+                              true
+                          }
+                          else -> false
+                      }
+                  }
+                  bubble = view
+                  wm.addView(view, params)
+              }
+              private fun openMain() {
+                  Toast.makeText(this, "Abrindo Agente V8", Toast.LENGTH_SHORT).show()
+                  startActivity(
+                      Intent(this, MainActivity::class.java).addFlags(
+                          Intent.FLAG_ACTIVITY_NEW_TASK
+                      )
+                  )
+              }
+              override fun onDestroy() {
+                  bubble?.let {
+                      try { wm.removeView(it) } catch (_: Exception) {}
+                  }
+                  bubble = null
+                  super.onDestroy()
+              }
+              override fun onBind(intent: Intent?): IBinder? = null
+          }
+          EOF
+          cat > proj/app/src/main/java/com/tomo/agentev8/GitHubManager.kt <<'EOF'
+          package com.tomo.agentev8
+          import okhttp3.OkHttpClient
+          import okhttp3.Request
+          class GitHubManager(
+              private val client: OkHttpClient = OkHttpClient()
+          ) {
+              fun testToken(token: String, callback: (Boolean, String) -> Unit) {
+                  if (token.isBlank()) {
+                      callback(false, "Token vazio")
+                      return
+                  }
+                  val request = Request.Builder()
+                      .url("https://api.github.com/user")
+                      .header("Authorization", "Bearer $token")
+                      .header("Accept", "application/vnd.github+json")
+                      .build()
+                  client.newCall(request).enqueue(object : okhttp3.Callback {
+                      override fun onFailure(call: okhttp3.Call, e: java.io.IOException) {
+                          callback(false, e.message ?: "Falha")
+                      }
+                      override fun onResponse(
+                          call: okhttp3.Call,
+                          response: okhttp3.Response
+                      ) {
+                          response.use {
+                              callback(
+                                  it.isSuccessful,
+                                  if (it.isSuccessful) "GitHub conectado" else "GitHub recusou o token"
+                              )
+                          }
+                      }
+                  })
+              }
+          }
+          EOF
+          cat > proj/app/src/main/java/com/tomo/agentev8/AgentCore.kt <<'EOF'
+          package com.tomo.agentev8
+          import android.content.Context
+          class AgentCore(context: Context) {
+              private val app = context.applicationContext
+              val memory = MemoryManager(app)
+              val projects = ProjectManager(app)
+              val tasks = TaskManager(app)
+              val evolution = EvolutionLabManager(app)
+              val ai = AIManager()
+              fun summarizeState(): String {
+                  return buildString {
+                      append("Memórias: ${memory.all().size}\n")
+                      append("Projetos: ${projects.all().size}\n")
+                      append("Tarefas: ${tasks.all().size}\n")
+                      append("Evolução registrada: ${evolution.history().size}")
+                  }
+              }
+              fun shutdown() {
+                  evolution.release()
+              }
+          }
+          EOF
+          cat > proj/app/src/main/java/com/tomo/agentev8/MainActivity.kt <<'EOF'
+          package com.tomo.agentev8
+          import android.Manifest
+          import android.app.Activity
+          import android.content.Context
+          import android.content.Intent
+          import android.content.pm.PackageManager
+          import android.graphics.Color
+          import android.graphics.drawable.GradientDrawable
+          import android.net.Uri
+          import android.os.Bundle
+          import android.provider.Settings
+          import android.text.InputType
+          import android.view.Gravity
+          import android.view.View
+          import android.view.ViewGroup
+          import android.widget.*
+          import java.util.Locale
+          class MainActivity : Activity() {
+              private lateinit var core: AgentCore
+              private lateinit var prefs: android.content.SharedPreferences
+              private lateinit var content: FrameLayout
+              private lateinit var chatContainer: LinearLayout
+              private lateinit var chatScroll: ScrollView
+              private lateinit var input: EditText
+              private lateinit var memoryContainer: LinearLayout
+              private lateinit var projectContainer: LinearLayout
+              private lateinit var taskContainer: LinearLayout
+              private lateinit var evolutionContainer: LinearLayout
+              private lateinit var settingsContainer: LinearLayout
+              private val views = mutableListOf<View>()
+              private val voiceCode = 501
+              private val recordCode = 502
+              override fun onCreate(state: Bundle?) {
+                  super.onCreate(state)
+                  core = AgentCore(this)
+                  prefs = getSharedPreferences("v8_config", Context.MODE_PRIVATE)
+                  buildUi()
+                  restoreHistory()
+                  if (android.os.Build.VERSION.SDK_INT >= 23 &&
+                      checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED
+                  ) {
+                      requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), recordCode)
+                  }
+              }
+              private fun buildUi() {
+                  val root = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setBackgroundColor(Color.rgb(9, 13, 22))
+                  }
+                  val header = TextView(this).apply {
+                      text = "⚡ AGENTE V8  •  CORE 5.0"
+                      textSize = 17f
+                      gravity = Gravity.CENTER
+                      setTextColor(Color.rgb(56, 189, 248))
+                      setPadding(12, 24, 12, 24)
+                      setBackgroundColor(Color.rgb(19, 27, 46))
+                  }
+                  root.addView(header)
+                  content = FrameLayout(this).apply {
+                      layoutParams = LinearLayout.LayoutParams(-1, 0, 1f)
+                  }
+                  root.addView(content)
+                  val nav = LinearLayout(this).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      setPadding(4, 4, 4, 4)
+                      setBackgroundColor(Color.rgb(19, 27, 46))
+                  }
+                  listOf(
+                      "💬" to { show("chat") },
+                      "🧠" to { loadMemory(); show("memory") },
+                      "📂" to { loadProjects(); show("projects") },
+                      "⚙" to { loadTasks(); show("tasks") },
+                      "🧬" to { loadEvolution(); show("evolution") },
+                      "🛠" to { show("settings") }
+                  ).forEach { item ->
+                      nav.addView(Button(this).apply {
+                          text = item.first
+                          setTextColor(Color.WHITE)
+                          textSize = 13f
+                          background = rounded("#1E293B", "#334155", 18)
+                          layoutParams = LinearLayout.LayoutParams(0, 70, 1f)
+                          setOnClickListener { item.second() }
+                      })
+                  }
+                  root.addView(nav)
+                  createChat()
+                  createMemory()
+                  createProjects()
+                  createTasks()
+                  createEvolution()
+                  createSettings()
+                  setContentView(root)
+                  show("chat")
+              }
+              private fun createChat() {
+                  val layout = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                  }
+                  chatScroll = ScrollView(this)
+                  chatContainer = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(20, 20, 20, 20)
+                  }
+                  chatScroll.addView(chatContainer)
+                  layout.addView(chatScroll, LinearLayout.LayoutParams(-1, 0, 1f))
+                  val bar = LinearLayout(this).apply {
+                      setPadding(8, 8, 8, 8)
+                      setBackgroundColor(Color.rgb(19, 27, 46))
+                  }
+                  input = EditText(this).apply {
+                      hint = "Fale com o V8..."
+                      setHintTextColor(Color.GRAY)
+                      setTextColor(Color.WHITE)
+                      inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+                      background = rounded("#1E293B", "#334155", 25)
+                      setPadding(20, 12, 20, 12)
+                  }
+                  val send = Button(this).apply {
+                      text = "➤"
+                      setTextColor(Color.WHITE)
+                      background = rounded("#2563EB", "#60A5FA", 25)
+                      layoutParams = LinearLayout.LayoutParams(90, 90).apply {
+                          leftMargin = 6
+                      }
+                      setOnClickListener { sendMessage() }
+                  }
+                  val voice = Button(this).apply {
+                      text = "🎙"
+                      setTextColor(Color.WHITE)
+                      background = rounded("#0284C7", "#38BDF8", 25)
+                      layoutParams = LinearLayout.LayoutParams(90, 90).apply {
+                          leftMargin = 6
+                      }
+                      setOnClickListener { voiceInput() }
+                  }
+                  bar.addView(input, LinearLayout.LayoutParams(0, -2, 1f))
+                  bar.addView(voice)
+                  bar.addView(send)
+                  layout.addView(bar)
+                  addPage("chat", layout)
+              }
+              private fun sendMessage() {
+                  val text = input.text.toString().trim()
+                  if (text.isEmpty()) return
+                  val key = prefs.getString("api_key", "").orEmpty()
+                  if (key.isBlank()) {
+                      Toast.makeText(this, "Configure a API Key primeiro.", Toast.LENGTH_LONG).show()
+                      show("settings")
+                      return
+                  }
+                  input.setText("")
+                  addChat(text, true)
+                  DatabaseHelper(this).addMessage("user", text)
+                  val model = prefs.getString("model", "gemini-2.5-flash")
+                      ?: "gemini-2.5-flash"
+                  core.tasks.queue(text)
+                  core.ai.askGemini(
+                      apiKey = key,
+                      model = model,
+                      prompt = text,
+                      memoryContext = core.memory.buildContext(),
+                      history = DatabaseHelper(this).getMessages(20)
+                  ) { reply, error ->
+                      runOnUiThread {
+                          if (reply != null) {
+                              addChat(reply, false)
+                              DatabaseHelper(this).addMessage("model", reply)
+                              core.memory.saveIfUseful(text)
+                          } else {
+                              addChat("Erro: ${error ?: "desconhecido"}", false)
+                          }
+                      }
+                  }
+              }
+              private fun addChat(text: String, user: Boolean) {
+                  val tv = TextView(this).apply {
+                      this.text = text
+                      textSize = 14f
+                      setTextColor(Color.WHITE)
+                      setPadding(20, 16, 20, 16)
+                      background = rounded(
+                          if (user) "#2563EB" else "#1E293B",
+                          if (user) "#3B82F6" else "#334155",
+                          22
+                      )
+                  }
+                  chatContainer.addView(tv, LinearLayout.LayoutParams(-2, -2).apply {
+                      gravity = if (user) Gravity.END else Gravity.START
+                      topMargin = 10
+                  })
+                  chatScroll.post { chatScroll.fullScroll(View.FOCUS_DOWN) }
+              }
+              private fun restoreHistory() {
+                  DatabaseHelper(this).getMessages(20).forEach {
+                      addChat(it.second, it.first == "user")
+                  }
+              }
+              private fun createMemory() {
+                  val scroll = ScrollView(this)
+                  memoryContainer = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(30, 30, 30, 30)
+                  }
+                  scroll.addView(memoryContainer)
+                  addPage("memory", scroll)
+              }
+              private fun loadMemory() {
+                  memoryContainer.removeAllViews()
+                  title(memoryContainer, "🧠 Memória Persistente")
+                  val input = EditText(this).apply {
+                      hint = "Guardar uma memória..."
+                      setHintTextColor(Color.GRAY)
+                      setTextColor(Color.WHITE)
+                  }
+                  memoryContainer.addView(input)
+                  memoryContainer.addView(action("Salvar") {
+                      core.memory.save(input.text.toString())
+                      input.setText("")
+                      loadMemory()
+                  })
+                  core.memory.all().forEach {
+                      line(memoryContainer, "• $it")
+                  }
+              }
+              private fun createProjects() {
+                  val scroll = ScrollView(this)
+                  projectContainer = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(30, 30, 30, 30)
+                  }
+                  scroll.addView(projectContainer)
+                  addPage("projects", scroll)
+              }
+              private fun loadProjects() {
+                  projectContainer.removeAllViews()
+                  title(projectContainer, "📂 Projetos")
+                  val name = EditText(this).apply {
+                      hint = "Nome"
+                      setHintTextColor(Color.GRAY)
+                      setTextColor(Color.WHITE)
+                  }
+                  val desc = EditText(this).apply {
+                      hint = "Descrição"
+                      setHintTextColor(Color.GRAY)
+                      setTextColor(Color.WHITE)
+                  }
+                  projectContainer.addView(name)
+                  projectContainer.addView(desc)
+                  projectContainer.addView(action("Criar projeto") {
+                      core.projects.create(name.text.toString(), desc.text.toString())
+                      loadProjects()
+                  })
+                  core.projects.all().forEach { line(projectContainer, "📌 $it") }
+              }
+              private fun createTasks() {
+                  val scroll = ScrollView(this)
+                  taskContainer = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(30, 30, 30, 30)
+                  }
+                  scroll.addView(taskContainer)
+                  addPage("tasks", scroll)
+              }
+              private fun loadTasks() {
+                  taskContainer.removeAllViews()
+                  title(taskContainer, "⚙ Tarefas")
+                  taskContainer.addView(action("Executar tarefa de teste") {
+                      core.tasks.start("Tarefa V8 em background")
+                      loadTasks()
+                  })
+                  core.tasks.all().forEach { line(taskContainer, "⚡ $it") }
+              }
+              private fun createEvolution() {
+                  val scroll = ScrollView(this)
+                  evolutionContainer = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(30, 30, 30, 30)
+                  }
+                  scroll.addView(evolutionContainer)
+                  addPage("evolution", scroll)
+              }
+              private fun loadEvolution() {
+                  evolutionContainer.removeAllViews()
+                  title(evolutionContainer, "🧬 Evolution Lab")
+                  val goal = EditText(this).apply {
+                      hint = "Objetivo da evolução"
+                      setHintTextColor(Color.GRAY)
+                      setTextColor(Color.WHITE)
+                  }
+                  evolutionContainer.addView(goal)
+                  evolutionContainer.addView(action("Iniciar evolução") {
+                      core.evolution.train(
+                          goal.text.toString().ifBlank { "Melhorar Agente V8" },
+                          30,
+                          { generation, score ->
+                              line(evolutionContainer, "Gen $generation → ${"%.3f".format(Locale.US, score)}")
+                          },
+                          { best ->
+                              Toast.makeText(
+                                  this,
+                                  "Evolução concluída: ${"%.3f".format(Locale.US, best)}",
+                                  Toast.LENGTH_SHORT
+                              ).show()
+                          }
+                      )
+                  })
+                  evolutionContainer.addView(action("Parar") {
+                      core.evolution.stop()
+                  })
+                  core.evolution.history().forEach { line(evolutionContainer, it) }
+              }
+              private fun createSettings() {
+                  val scroll = ScrollView(this)
+                  settingsContainer = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(30, 30, 30, 30)
+                  }
+                  scroll.addView(settingsContainer)
+                  addPage("settings", scroll)
+              }
+              private fun buildSettings() {
+                  settingsContainer.removeAllViews()
+                  title(settingsContainer, "🛠 Configurações")
+                  val key = EditText(this).apply {
+                      hint = "Gemini API Key"
+                      setHintTextColor(Color.GRAY)
+                      setTextColor(Color.WHITE)
+                      inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+                      setText(prefs.getString("api_key", "").orEmpty())
+                  }
+                  val model = EditText(this).apply {
+                      hint = "Modelo"
+                      setHintTextColor(Color.GRAY)
+                      setTextColor(Color.WHITE)
+                      setText(prefs.getString("model", "gemini-2.5-flash"))
+                  }
+                  settingsContainer.addView(key)
+                  settingsContainer.addView(model)
+                  settingsContainer.addView(action("Salvar") {
+                      prefs.edit()
+                          .putString("api_key", key.text.toString().trim())
+                          .putString("model", model.text.toString().trim())
+                          .apply()
+                      Toast.makeText(this, "Configurações salvas.", Toast.LENGTH_SHORT).show()
+                  })
+                  settingsContainer.addView(action("Testar Bubble") {
+                      if (Settings.canDrawOverlays(this)) {
+                          startService(Intent(this, FloatingBubbleService::class.java))
+                      } else {
+                          startActivity(
+                              Intent(
+                                  Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                  Uri.parse("package:$packageName")
+                              )
+                          )
+                      }
+                  })
+                  settingsContainer.addView(action("Solicitar microfone") {
+                      if (android.os.Build.VERSION.SDK_INT >= 23) {
+                          requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), recordCode)
+                      }
+                  })
+              }
+              private fun voiceInput() {
+                  val intent = Intent(android.speech.RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                      putExtra(
+                          android.speech.RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                          android.speech.RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
+                      )
+                      putExtra(
+                          android.speech.RecognizerIntent.EXTRA_LANGUAGE,
+                          "pt-BR"
+                      )
+                  }
+                  try {
+                      startActivityForResult(intent, voiceCode)
+                  } catch (_: Exception) {
+                      Toast.makeText(this, "Reconhecimento de voz indisponível.", Toast.LENGTH_SHORT).show()
+                  }
+              }
+              override fun onActivityResult(code: Int, result: Int, data: Intent?) {
+                  super.onActivityResult(code, result, data)
+                  if (code == voiceCode && result == RESULT_OK) {
+                      val values = data?.getStringArrayListExtra(
+                          android.speech.RecognizerIntent.EXTRA_RESULTS
+                      )
+                      val spoken = values?.firstOrNull()
+                      if (!spoken.isNullOrBlank()) {
+                          input.setText(spoken)
+                          sendMessage()
+                      }
+                  }
+              }
+              private fun show(name: String) {
+                  views.forEach { it.visibility = View.GONE }
+                  val target = views.firstOrNull { it.tag == name }
+                  target?.visibility = View.VISIBLE
+                  if (name == "settings") buildSettings()
+              }
+              private fun addPage(name: String, view: View) {
+                  view.tag = name
+                  view.visibility = View.GONE
+                  views.add(view)
+                  content.addView(view, FrameLayout.LayoutParams(-1, -1))
+              }
+              private fun title(parent: LinearLayout, text: String) {
+                  parent.addView(TextView(this).apply {
+                      this.text = text
+                      textSize = 20f
+                      setTextColor(Color.WHITE)
+                      setPadding(0, 0, 0, 25)
+                  })
+              }
+              private fun line(parent: LinearLayout, text: String) {
+                  parent.addView(TextView(this).apply {
+                      this.text = text
+                      textSize = 14f
+                      setTextColor(Color.LTGRAY)
+                      setPadding(0, 12, 0, 12)
+                  })
+              }
+              private fun action(text: String, run: () -> Unit): Button {
+                  return Button(this).apply {
+                      this.text = text
+                      setTextColor(Color.WHITE)
+                      background = rounded("#2563EB", "#60A5FA", 18)
+                      setOnClickListener { run() }
+                  }
+              }
+              private fun rounded(bg: String, stroke: String, radius: Int): GradientDrawable {
+                  return GradientDrawable().apply {
+                      setColor(Color.parseColor(bg))
+                      setStroke(2, Color.parseColor(stroke))
+                      cornerRadius = radius.toFloat()
+                  }
+              }
+              override fun onDestroy() {
+                  core.shutdown()
+                  super.onDestroy()
+              }
+          }
+          EOF
+      - name: Gerar Wrapper e compilar
         shell: bash
         run: |
-          # Aqui você coloca os arquivos Kotlin nas pastas criadas (FloatingBubbleService.kt, AudioRecordManager.kt, EvolutionLabManager.kt, DatabaseHelper.kt e MainActivity.kt)
-
-      - name: Compilar APK de Debug
-        shell: bash
-        run: |
+          set -e
           cd proj
           gradle wrapper --gradle-version 8.5
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon
-
-      - name: Publicar APK na aba Releases
+          ./gradlew assembleDebug --no-daemon --stacktrace
+      - name: Verificar APK
+        shell: bash
+        run: |
+          set -e
+          test -f proj/app/build/outputs/apk/debug/app-debug.apk
+          ls -lh proj/app/build/outputs/apk/debug/app-debug.apk
+      - name: Publicar APK
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v3.8-${{ github.run_number }}
-          name: "Agente V8 - v3.8 Modular Pro (Build ${{ github.run_number }})"
-          body: "Versão oficial completa com Bolha Flutuante, Microfone Customizado, Laboratório de Evolução, Banco de Dados SQLite e Interface em Abas."
+          tag_name: v5.0-${{ github.run_number }}
+          name: "Agente V8 5.0 - Core Completo ${{ github.run_number }}"
+          body: |
+            Agente V8 com:
+            - Chat Gemini
+            - Memória SQLite
+            - Histórico
+            - Projetos
+            - Tarefas em background
+            - Foreground Service
+            - Reconhecimento de voz
+            - Bubble flutuante
+            - Evolution Lab
+            - Integração base com GitHub
+            - Arquitetura modular
           files: proj/app/build/outputs/apk/debug/app-debug.apk
