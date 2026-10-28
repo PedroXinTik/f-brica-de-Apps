@@ -1,4 +1,4 @@
-name: Compilar e Publicar Agente V8 com Background Tasks
+name: Compilar e Publicar Agente V8 v3.8 Realista
 
 on:
   workflow_dispatch:
@@ -23,7 +23,7 @@ jobs:
         with:
           gradle-version: 8.5
 
-      - name: Criar Projeto Agente V8 com Motor de Background
+      - name: Criar Projeto Agente V8 v3.8 Autônomo e Realista
         shell: bash
         run: |
           mkdir -p proj/app/src/main/java/com/tomo/agentev8 proj/app/src/main/res/values
@@ -59,8 +59,8 @@ jobs:
                   applicationId 'com.tomo.agentev8'
                   minSdk 26
                   targetSdk 34
-                  versionCode 8
-                  versionName '4.5'
+                  versionCode 39
+                  versionName '3.8'
               }
               compileOptions {
                   sourceCompatibility JavaVersion.VERSION_17
@@ -79,7 +79,6 @@ jobs:
               <uses-permission android:name="android.permission.INTERNET"/>
               <uses-permission android:name="android.permission.RECORD_AUDIO"/>
               <uses-permission android:name="android.permission.WAKE_LOCK"/>
-              <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
               
               <application 
                   android:label="Agente V8" 
@@ -99,7 +98,6 @@ jobs:
           <resources><string name="app_name">Agente V8</string></resources>
           EOF
 
-          # Banco de Dados Local Completo (Memória, Projetos e Tarefas em Background)
           cat > proj/app/src/main/java/com/tomo/agentev8/DatabaseHelper.kt <<'EOF'
           package com.tomo.agentev8
 
@@ -108,75 +106,45 @@ jobs:
           import android.database.sqlite.SQLiteDatabase
           import android.database.sqlite.SQLiteOpenHelper
 
-          class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "agentev8_full.db", null, 2) {
-
+          class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, "agentev8_v38.db", null, 1) {
               override fun onCreate(db: SQLiteDatabase) {
                   db.execSQL("CREATE TABLE memory (id INTEGER PRIMARY KEY AUTOINCREMENT, info TEXT)")
                   db.execSQL("CREATE TABLE projects (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, description TEXT)")
-                  db.execSQL("CREATE TABLE background_tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, status TEXT, result TEXT)")
+                  db.execSQL("CREATE TABLE tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, status TEXT, result TEXT)")
               }
-
               override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
                   db.execSQL("DROP TABLE IF EXISTS memory")
                   db.execSQL("DROP TABLE IF EXISTS projects")
-                  db.execSQL("DROP TABLE IF EXISTS background_tasks")
+                  db.execSQL("DROP TABLE IF EXISTS tasks")
                   onCreate(db)
               }
-
               fun addMemory(info: String) {
-                  writableDatabase.use { db ->
-                      val values = ContentValues().apply { put("info", info) }
-                      db.insert("memory", null, values)
-                  }
+                  writableDatabase.use { db -> db.insert("memory", null, ContentValues().apply { put("info", info) }) }
               }
-
               fun getMemories(): List<String> {
                   val list = mutableListOf<String>()
-                  readableDatabase.rawQuery("SELECT info FROM memory", null).use { cursor ->
-                      while (cursor.moveToNext()) { list.add(cursor.getString(0)) }
-                  }
+                  readableDatabase.rawQuery("SELECT info FROM memory", null).use { c -> while (c.moveToNext()) list.add(c.getString(0)) }
                   return list
               }
-
               fun addProject(name: String, desc: String) {
-                  writableDatabase.use { db ->
-                      val values = ContentValues().apply { put("name", name); put("description", desc) }
-                      db.insert("projects", null, values)
-                  }
+                  writableDatabase.use { db -> db.insert("projects", null, ContentValues().apply { put("name", name); put("description", desc) }) }
               }
-
               fun getProjects(): List<String> {
                   val list = mutableListOf<String>()
-                  readableDatabase.rawQuery("SELECT name, description FROM projects", null).use { cursor ->
-                      while (cursor.moveToNext()) { list.add("📌 ${cursor.getString(0)}: ${cursor.getString(1)}") }
-                  }
+                  readableDatabase.rawQuery("SELECT name, description FROM projects", null).use { c -> while (c.moveToNext()) list.add("📌 ${c.getString(0)}: ${c.getString(1)}") }
                   return list
               }
-
               fun addTask(title: String, status: String, result: String) {
-                  writableDatabase.use { db ->
-                      val values = ContentValues().apply {
-                          put("title", title)
-                          put("status", status)
-                          put("result", result)
-                      }
-                      db.insert("background_tasks", null, values)
-                  }
+                  writableDatabase.use { db -> db.insert("tasks", null, ContentValues().apply { put("title", title); put("status", status); put("result", result) }) }
               }
-
               fun getTasks(): List<String> {
                   val list = mutableListOf<String>()
-                  readableDatabase.rawQuery("SELECT title, status, result FROM background_tasks", null).use { cursor ->
-                      while (cursor.moveToNext()) {
-                          list.add("⚡ [${cursor.getString(1)}] ${cursor.getString(0)} — Res: ${cursor.getString(2)}")
-                      }
-                  }
+                  readableDatabase.rawQuery("SELECT title, status, result FROM tasks", null).use { c -> while (c.moveToNext()) list.add("⚡ [${c.getString(1)}] ${c.getString(0)}") }
                   return list
               }
           }
           EOF
 
-          # Activity Principal com Abas Expandidas (Chat, Memória, Projetos, Tarefas BG, Configs)
           cat > proj/app/src/main/java/com/tomo/agentev8/MainActivity.kt <<'EOF'
           package com.tomo.agentev8
 
@@ -186,6 +154,8 @@ jobs:
           import android.graphics.Color
           import android.graphics.drawable.GradientDrawable
           import android.os.Bundle
+          import android.os.Handler
+          import android.os.Looper
           import android.speech.RecognizerIntent
           import android.speech.tts.TextToSpeech
           import android.text.InputType
@@ -221,6 +191,8 @@ jobs:
 
               private val chatHistory = mutableListOf<JSONObject>()
               private val VOICE_REQUEST_CODE = 100
+              private val handler = Handler(Looper.getMainLooper())
+              private var idleRunnable: Runnable? = null
 
               override fun onCreate(savedInstanceState: Bundle?) {
                   super.onCreate(savedInstanceState)
@@ -234,7 +206,7 @@ jobs:
                   }
 
                   val header = TextView(this).apply {
-                      text = "⚡ AGENTE V8 — CORE SYSTEM"
+                      text = "⚡ AGENTE V8 — v3.8 REALISTA"
                       textSize = 16f
                       setTextColor(Color.parseColor("#38BDF8"))
                       setBackgroundColor(Color.parseColor("#131B2E"))
@@ -254,17 +226,12 @@ jobs:
                       setPadding(8, 8, 8, 8)
                   }
 
-                  val btnChat = createNavButton("💬 Chat") { showView(chatLayout) }
-                  val btnMem = createNavButton("🧠 Mem") { loadMemories(); showView(memoryLayout) }
-                  val btnProj = createNavButton("📂 Proj") { loadProjects(); showView(projectsLayout) }
-                  val btnTask = createNavButton("⚙️ Tarefas") { loadTasks(); showView(tasksLayout) }
-                  val btnSet = createNavButton("🛠️ Conf") { showView(settingsLayout) }
+                  navBar.addView(createNavButton("💬 Chat") { showView(chatLayout) })
+                  navBar.addView(createNavButton("🧠 Mem") { loadMemories(); showView(memoryLayout) })
+                  navBar.addView(createNavButton("📂 Proj") { loadProjects(); showView(projectsLayout) })
+                  navBar.addView(createNavButton("⚙️ Tarefas") { loadTasks(); showView(tasksLayout) })
+                  navBar.addView(createNavButton("🛠️ Conf") { showView(settingsLayout) })
 
-                  navBar.addView(btnChat)
-                  navBar.addView(btnMem)
-                  navBar.addView(btnProj)
-                  navBar.addView(btnTask)
-                  navBar.addView(btnSet)
                   mainLayout.addView(navBar)
 
                   initChatView()
@@ -282,11 +249,39 @@ jobs:
                   showView(chatLayout)
                   setContentView(mainLayout)
 
-                  val systemPrompt = JSONObject().apply {
+                  chatHistory.add(JSONObject().apply {
                       put("role", "user")
-                      put("parts", JSONArray().put(JSONObject().put("text", "Você é o Agente V8, um agente pessoal autônomo para Android com suporte a tarefas em segundo plano e persistência.")))
+                      put("parts", JSONArray().put(JSONObject().put("text", "Você é o Agente V8 versão 3.8, assistente inteligente autônomo. Você possui comportamentos autônomos quando o usuário está ocioso.")))
+                  })
+
+                  resetIdleTimer()
+              }
+
+              private fun resetIdleTimer() {
+                  idleRunnable?.let { handler.removeCallbacks(it) }
+                  idleRunnable = Runnable {
+                      triggerAutonomousAction()
                   }
-                  chatHistory.add(systemPrompt)
+                  // Se ficar 45 segundos sem interação, a IA entra em modo autônomo (lendo logs, cantando ou soltando curiosidade)
+                  handler.postDelayed(idleRunnable!!, 45000)
+              }
+
+              private fun triggerAutonomousAction() {
+                  val actions = listOf(
+                      "Hmm... Analisando os logs de sistema em segundo plano enquanto você descansa...",
+                      "🎵 'Binary code flowing through my mind...' (Cantarolando um som cyberpunk)",
+                      "Curiosidade do V8: Você sabia que o primeiro compilador moderno foi criado na década de 1950?",
+                      "Lendo registos de otimização de CPU para manter o Galaxy A17 voando alto...",
+                      "🎵 'Loading dreams in neon light...' (Humming a robotic tune)"
+                  )
+                  val randomThought = actions.random()
+                  addMessageToChat("🤖 [Modo Autônomo] $randomThought", false)
+                  resetIdleTimer()
+              }
+
+              override fun onUserInteraction() {
+                  super.onUserInteraction()
+                  resetIdleTimer()
               }
 
               private fun createNavButton(text: String, onClick: () -> Unit): Button {
@@ -326,7 +321,7 @@ jobs:
                   }
 
                   inputMessage = EditText(this).apply {
-                      hint = "Comande o V8..."
+                      hint = "Comande o V8 v3.8..."
                       setHintTextColor(Color.GRAY)
                       setTextColor(Color.WHITE)
                       background = createRoundedDrawable("#1E293B", "#334155", 30)
@@ -334,18 +329,20 @@ jobs:
                       layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
                   }
 
+                  // Botão de voz discreto (sem quadrados brancos invasivos)
                   val btnVoice = Button(this).apply {
                       text = "🎙️"
-                      background = createRoundedDrawable("#0284C7", "#38BDF8", 40)
-                      layoutParams = LinearLayout.LayoutParams(100, 100).apply { leftMargin = 10 }
+                      setTextColor(Color.WHITE)
+                      background = createRoundedDrawable("#0284C7", "#38BDF8", 20)
+                      layoutParams = LinearLayout.LayoutParams(90, 90).apply { leftMargin = 10 }
                       setOnClickListener { startVoiceInput() }
                   }
 
                   val btnSend = Button(this).apply {
                       text = "➔"
                       setTextColor(Color.WHITE)
-                      background = createRoundedDrawable("#2563EB", "#60A5FA", 40)
-                      layoutParams = LinearLayout.LayoutParams(100, 100).apply { leftMargin = 10 }
+                      background = createRoundedDrawable("#2563EB", "#60A5FA", 20)
+                      layoutParams = LinearLayout.LayoutParams(90, 90).apply { leftMargin = 10 }
                       setOnClickListener { sendMessage() }
                   }
 
@@ -364,7 +361,7 @@ jobs:
                   layout.addView(bottomBar, bottomParams)
                   chatLayout = layout
 
-                  addMessageToChat("V8: Subsistema operacional ativo. Pronto para comandos em segundo plano.", false)
+                  addMessageToChat("V8 v3.8: Sistema pronto. Boa jogatina! Ficarei monitorando em segundo plano.", false)
               }
 
               private fun sendMessage() {
@@ -381,34 +378,29 @@ jobs:
                   addMessageToChat(text, true)
                   inputMessage.setText("")
 
-                  val userObj = JSONObject().apply {
+                  chatHistory.add(JSONObject().apply {
                       put("role", "user")
                       put("parts", JSONArray().put(JSONObject().put("text", text)))
-                  }
-                  chatHistory.add(userObj)
+                  })
                   
-                  // Regista tarefa na fila simulando background task
-                  db.addTask(text, "Executando", "Processando na API...")
+                  db.addTask(text, "Executando", "Processando...")
                   callGeminiApi(apiKey, text)
               }
 
               private fun callGeminiApi(apiKey: String, userText: String) {
-                  val selectedModel = prefs.getString("selected_model", "gemini-2.5-flash") ?: "gemini-2.5-flash"
+                  val selectedModel = prefs.getString("selected_model", "gemini-3.8-flash") ?: "gemini-3.8-flash"
                   val url = "https://generativelanguage.googleapis.com/v1beta/models/$selectedModel:generateContent?key=$apiKey"
 
                   val jsonBody = JSONObject().apply { put("contents", JSONArray(chatHistory)) }
                   val body = jsonBody.toString().toRequestBody("application/json; charset=utf-8".toMediaType())
 
-                  val request = Request.Builder().url(url).post(body).build()
-
-                  client.newCall(request).enqueue(object : Callback {
+                  client.newCall(Request.Builder().url(url).post(body).build()).enqueue(object : Callback {
                       override fun onFailure(call: Call, e: IOException) {
                           runOnUiThread {
-                              db.addTask(userText, "Erro", e.message ?: "Falha de rede")
+                              db.addTask(userText, "Erro", e.message ?: "Falha")
                               addMessageToChat("Erro de conexão: ${e.message}", false)
                           }
                       }
-
                       override fun onResponse(call: Call, response: Response) {
                           val resText = response.body?.string()
                           runOnUiThread {
@@ -416,17 +408,15 @@ jobs:
                                   val json = JSONObject(resText ?: "")
                                   val reply = json.getJSONArray("candidates").getJSONObject(0).getJSONObject("content").getJSONArray("parts").getJSONObject(0).getString("text")
 
-                                  val modelObj = JSONObject().apply {
+                                  chatHistory.add(JSONObject().apply {
                                       put("role", "model")
                                       put("parts", JSONArray().put(JSONObject().put("text", reply)))
-                                  }
-                                  chatHistory.add(modelObj)
+                                  })
                                   db.addTask(userText, "Concluído", "Sucesso")
                                   addMessageToChat(reply, false)
-                                  speakOut(reply)
                               } catch (e: Exception) {
                                   db.addTask(userText, "Erro", "Resposta inválida")
-                                  addMessageToChat("Erro ao processar resposta.", false)
+                                  addMessageToChat("Erro ao processar resposta do modelo $selectedModel.", false)
                               }
                           }
                       }
@@ -451,41 +441,35 @@ jobs:
 
               private lateinit var memoryContainer: LinearLayout
               private fun initMemoryView() {
-                  val scroll = ScrollView(this)
                   memoryContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(40, 40, 40, 40) }
-                  scroll.addView(memoryContainer)
-                  memoryLayout = scroll
+                  memoryLayout = ScrollView(this).apply { addView(memoryContainer) }
               }
-
               private fun loadMemories() {
                   memoryContainer.removeAllViews()
                   memoryContainer.addView(TextView(this).apply { text = "🧠 Memória Persistente"; textSize = 18f; setTextColor(Color.WHITE) })
-                  val input = EditText(this).apply { hint = "Novo registo..."; setHintTextColor(Color.GRAY); setTextColor(Color.WHITE) }
+                  val input = EditText(this).apply { hint = "Nova memória..."; setHintTextColor(Color.GRAY); setTextColor(Color.WHITE) }
                   val btn = Button(this).apply {
-                      text = "Salvar na Memória"
+                      text = "Salvar"
                       setTextColor(Color.WHITE)
                       background = createRoundedDrawable("#2563EB", "#60A5FA", 20)
                       setOnClickListener { if (input.text.isNotEmpty()) { db.addMemory(input.text.toString()); input.setText(""); loadMemories() } }
                   }
                   memoryContainer.addView(input); memoryContainer.addView(btn)
-                  db.getMemories().forEach { memoryContainer.addView(TextView(this).apply { text = "• $memoryContainer"; setTextColor(Color.LTGRAY); setPadding(0, 15, 0, 0) }) }
+                  db.getMemories().forEach { memoryContainer.addView(TextView(this).apply { text = "• $it"; setTextColor(Color.LTGRAY); setPadding(0, 15, 0, 0) }) }
               }
 
               private lateinit var projectsContainer: LinearLayout
               private fun initProjectsView() {
-                  val scroll = ScrollView(this)
                   projectsContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(40, 40, 40, 40) }
-                  scroll.addView(projectsContainer)
-                  projectsLayout = scroll
+                  projectsLayout = ScrollView(this).apply { addView(projectsContainer) }
               }
-
               private fun loadProjects() {
                   projectsContainer.removeAllViews()
-                  projectsContainer.addView(TextView(this).apply { text = "📂 Gestor de Projetos"; textSize = 18f; setTextColor(Color.WHITE) })
-                  val name = EditText(this).apply { hint = "Nome do Projeto"; setHintTextColor(Color.GRAY); setTextColor(Color.WHITE) }
-                  val desc = EditText(this).apply { hint = "Descrição / Código"; setHintTextColor(Color.GRAY); setTextColor(Color.WHITE) }
+                  projectsContainer.addView(TextView(this).apply { text = "📂 Projetos"; textSize = 18f; setTextColor(Color.WHITE) })
+                  val name = EditText(this).apply { hint = "Nome"; setHintTextColor(Color.GRAY); setTextColor(Color.WHITE) }
+                  val desc = EditText(this).apply { hint = "Descrição"; setHintTextColor(Color.GRAY); setTextColor(Color.WHITE) }
                   val btn = Button(this).apply {
-                      text = "Criar Projeto"
+                      text = "Criar"
                       setTextColor(Color.WHITE)
                       background = createRoundedDrawable("#2563EB", "#60A5FA", 20)
                       setOnClickListener { if (name.text.isNotEmpty()) { db.addProject(name.text.toString(), desc.text.toString()); name.setText(""); desc.setText(""); loadProjects() } }
@@ -494,30 +478,23 @@ jobs:
                   db.getProjects().forEach { projectsContainer.addView(TextView(this).apply { text = it; setTextColor(Color.LTGRAY); setPadding(0, 20, 0, 0) }) }
               }
 
-              // --- PAINEL DE TAREFAS EM SEGUNDO PLANO ---
               private lateinit var tasksContainer: LinearLayout
               private fun initTasksView() {
-                  val scroll = ScrollView(this)
                   tasksContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(40, 40, 40, 40) }
-                  scroll.addView(tasksContainer)
-                  tasksLayout = scroll
+                  tasksLayout = ScrollView(this).apply { addView(tasksContainer) }
               }
-
               private fun loadTasks() {
                   tasksContainer.removeAllViews()
-                  tasksContainer.addView(TextView(this).apply { text = "⚙️ Painel de Tarefas (Background)"; textSize = 18f; setTextColor(Color.WHITE) })
-                  db.getTasks().forEach {
-                      tasksContainer.addView(TextView(this).apply { text = it; setTextColor(Color.CYAN); setPadding(0, 15, 0, 0) })
-                  }
+                  tasksContainer.addView(TextView(this).apply { text = "⚙️ Tarefas em Segundo Plano"; textSize = 18f; setTextColor(Color.WHITE) })
+                  db.getTasks().forEach { tasksContainer.addView(TextView(this).apply { text = it; setTextColor(Color.CYAN); setPadding(0, 15, 0, 0) }) }
               }
 
               private fun initSettingsView() {
-                  val scroll = ScrollView(this)
                   val container = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(40, 40, 40, 40) }
-                  container.addView(TextView(this).apply { text = "🛠️ Configurações & API"; textSize = 18f; setTextColor(Color.WHITE) })
+                  container.addView(TextView(this).apply { text = "🛠️ Configurações v3.8"; textSize = 18f; setTextColor(Color.WHITE) })
 
                   val keyInput = EditText(this).apply {
-                      hint = "Chave API do Gemini"
+                      hint = "Chave API"
                       setHintTextColor(Color.GRAY)
                       setTextColor(Color.WHITE)
                       inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
@@ -525,23 +502,39 @@ jobs:
                   }
                   container.addView(keyInput)
 
-                  val models = arrayOf("gemini-2.5-flash", "gemini-2.5-pro", "gemini-3.0-flash", "gemini-3.0-pro")
+                  val models = arrayOf("gemini-3.8-flash", "gemini-3.8-pro", "gemini-2.5-flash", "gemini-2.5-pro", "Outro (Personalizado)")
                   val spinner = Spinner(this).apply { adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, models) }
                   container.addView(spinner)
 
+                  val customModelInput = EditText(this).apply {
+                      hint = "Digite o modelo..."
+                      setHintTextColor(Color.GRAY)
+                      setTextColor(Color.WHITE)
+                      visibility = View.GONE
+                  }
+                  container.addView(customModelInput)
+
+                  spinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                      override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                          customModelInput.visibility = if (models[position] == "Outro (Personalizado)") View.VISIBLE else View.GONE
+                      }
+                      override fun onNothingSelected(parent: AdapterView<*>?) {}
+                  }
+
                   val btnSave = Button(this).apply {
-                      text = "Guardar Configurações"
+                      text = "Salvar Configurações"
                       setTextColor(Color.WHITE)
                       background = createRoundedDrawable("#2563EB", "#60A5FA", 20)
                       setOnClickListener {
-                          prefs.edit().putString("api_key", keyInput.text.toString().trim()).putString("selected_model", spinner.selectedItem.toString()).apply()
-                          Toast.makeText(this@MainActivity, "Salvo!", Toast.LENGTH_SHORT).show()
+                          val sel = spinner.selectedItem.toString()
+                          val finalModel = if (sel == "Outro (Personalizado)") customModelInput.text.toString().trim() else sel
+                          prefs.edit().putString("api_key", keyInput.text.toString().trim()).putString("selected_model", finalModel).apply()
+                          Toast.makeText(this@MainActivity, "Salvo para $finalModel!", Toast.LENGTH_SHORT).show()
                           showView(chatLayout)
                       }
                   }
                   container.addView(btnSave)
-                  scroll.addView(container)
-                  settingsLayout = scroll
+                  settingsLayout = ScrollView(this).apply { addView(container) }
               }
 
               private fun startVoiceInput() {
@@ -555,17 +548,21 @@ jobs:
               override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
                   super.onActivityResult(requestCode, resultCode, data)
                   if (requestCode == VOICE_REQUEST_CODE && resultCode == RESULT_OK) {
-                      val result = data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
-                      if (!result.isNullOrEmpty()) { inputMessage.setText(result[0]); sendMessage() }
+                      val res = data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+                      if (!res.isNullOrEmpty()) { inputMessage.setText(res[0]); sendMessage() }
                   }
               }
 
-              override fun onInit(status: Int) { if (status == TextToSpeech.SUCCESS) tts?.language = Locale("pt", "BR") }
-              private fun speakOut(text: String) { tts?.speak(text.replace(Regex("[*`#_]"), ""), TextToSpeech.QUEUE_FLUSH, null, null) }
+              override fun onInit(status: Int) {}
               private fun createRoundedDrawable(bg: String, stroke: String, rad: Int): GradientDrawable {
                   return GradientDrawable().apply { setColor(Color.parseColor(bg)); setStroke(3, Color.parseColor(stroke)); cornerRadius = rad.toFloat() }
               }
-              override fun onDestroy() { tts?.stop(); tts?.shutdown(); super.onDestroy() }
+              override fun onDestroy() {
+                  idleRunnable?.let { handler.removeCallbacks(it) }
+                  tts?.stop()
+                  tts?.shutdown()
+                  super.onDestroy()
+              }
           }
           EOF
 
@@ -580,7 +577,7 @@ jobs:
       - name: Publicar APK na aba Releases
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v4.5-${{ github.run_number }}
-          name: "Agente V8 - Background & Core Versão ${{ github.run_number }}"
-          body: "Versão com painel de tarefas em segundo plano, registo de filas no SQLite, abas expandidas e integração total ao Gemini."
+          tag_name: v3.8-${{ github.run_number }}
+          name: "Agente V8 - Versão 3.8 Realista (Build ${{ github.run_number }})"
+          body: "Versão oficial 3.8 com IA autônoma e realista (modo ocioso com leituras e músicas), interface de voz limpa sem quadrados incômodos e banco de dados local completo."
           files: proj/app/build/outputs/apk/debug/app-debug.apk
